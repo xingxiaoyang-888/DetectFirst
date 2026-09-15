@@ -1,0 +1,3 @@
+base_config: configs/train.yaml
+weights_lock: reports/S01_download/dinov2_weights.lock.json
+include_mechanisms: true

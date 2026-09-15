@@ -1,0 +1,2 @@
+manifest: data/manifests/manifest.jsonl
+phase: development
