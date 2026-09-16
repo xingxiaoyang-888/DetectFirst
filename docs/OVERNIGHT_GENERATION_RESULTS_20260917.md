@@ -25,3 +25,11 @@ CPU2721750因zip严格参数lint失败，未生成；修复后2721751准备通�
 A2721755完成270秒，8/8机械保持通过。实际查看全部8个最终/source全图和8组三列边界source/raw/final：榛子9ff两张不再新增黑洞，形状/背景保留，AI_PASS_WITH_FLAGS2张；4张地毯仍有软化织纹带或相位衔接问题，b2两张冠部纹理/暗沟细节的外围正常性未成立，AI_NOT_PASSED6张。A路线整体仍未通过，人工准入0。结果明细 `reports/overnight_20260917/A_r1_ai_check.json`。不因机械零误差或变色量较小改判。
 
 两条独立流水就绪后只使用最多2卡。B其余7个固定调用在2721762继续，产物 `outputs/overnight_20260917/B_anomalyany_continue_v1`。两线完成后逐图检查核心保持、外围正常、缺陷真实可见、边界与标签；通过前不组合或放量。正式扩量仍要求完整管线和连续两批各至少10/12 AI通过。
+
+## A第二轮具体假设与暂停
+
+针对地毯织纹相位与榛子冠部重塑，第二轮 `A_source_texture_illumination_r2` 保留source高频材质和几何，只从第一轮8张raw提取灰度Gaussian sigma48的低频照明比值，限制gain0.94–1.06后按相同E羽化乘到source。新调用0、GPU0；原raw/A第一轮失败不改。此条件类明确缩窄为轻微局部照明，不能声称新的材质几何生成或学习到不变量。
+
+CPU2721784完成8个派生候选。实际看全部8个source/final全图及8组source/reused_raw/final局部：核心、正常材质、缺陷可见性和边界保持8/8；但视觉几乎仍是原图，E内平均RGB改变量0.40–2.66，程序非零差异不证明外围变化有效。因此整体AI_NOT_PASSED_EFFECTIVE_EXTERIOR_CONDITION，AI整体准入0，人工准入0。明细 `reports/overnight_20260917/A_r2_ai_check.json`，产物 `outputs/overnight_20260917/A_source_texture_illumination_r2`。
+
+A已用尽两轮具体假设修订，暂停该路线，继续独立B。两个seed派生的hash不同，但不按微小差异宣称有用条件多样性。不组合或正式扩量。
