@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 from overnight_budget import claim_call, finish_call
 from PIL import Image, ImageDraw
-from scipy.ndimage import distance_transform_edt
+from scipy.ndimage import binary_fill_holes, distance_transform_edt, label, median_filter
 
 from defectfirst.controls.artifacts import load_binary, save_png
 from defectfirst.controls.generation import FluxGenerator
@@ -37,19 +37,22 @@ def now():
 
 def document(output, manifest):
     write_json(output / "manifest.json", manifest)
+    config = manifest["config"]
     text = [
         "# A: Real support core protection trial",
         f"Status: {manifest['status']}; all candidates WAITING_HUMAN.",
         "Four fixed repeat-11 K=5 support IDs; two fixed seeds each; eight calls maximum.",
         "Unique real anomaly conditioning IDs: 4; new conditioning use, not K_ref=0.",
         "Historical test paths have frozen anomaly_support_pool roles, checked before decoding.",
-        "M is official defect mask, resized nearest. G is M dilated by 24 canvas pixels.",
-        "E is the local exterior annulus up to 96 pixels outside G; G and E are disjoint.",
-        "Q is the first 12 pixels of E; cosine blend joins source to raw reconstruction.",
+        f"Recipe: {config.get('recipe_id', 'A_baseline_v1')}; hypothesis recorded in frozen request.",
+        f"M is official defect mask, resized nearest. G is M dilated by {config['guard']} canvas pixels.",
+        f"E is the local exterior annulus up to {config['edit_radius']} pixels outside G; G and E are disjoint.",
+        f"Q is the first {config['collar']} pixels of E; cosine blend joins source to raw reconstruction.",
         "Final copies original input outside E and inside G exactly; outer edge feathers 12 pixels.",
         "raw_N.png is untouched model output; final_N.png is explicit pixel composition.",
         "Zero final G error is a construction property, not learned neural invariance.",
-        "E includes any background in the local annulus; no object ROI approval is claimed.",
+        "Baseline E includes local background. Revision1 confines hazelnut edits to a source-only candidate material interior.",
+        "Material ROI is a largest bright component with holes filled and 24px erosion; not human-approved segmentation.",
         "No normal counterfactual, full six-view group, segmentation training or formal expansion.",
         "Context protection is a candidate. Two human reviewers and review hashes remain null.",
         "Original strict FP32/BF16 audit remains FAIL_UNCHANGED.",
@@ -60,6 +63,35 @@ def document(output, manifest):
     (output / "README.md").write_text("\n\n".join(text) + "\n", encoding="utf-8")
 
 
+def material_interior(source, valid, product):
+    if product == "carpet":
+        return valid.copy(), {"type": "valid_texture_canvas"}
+    gray = median_filter(np.asarray(Image.fromarray(source).convert("L")), size=5)
+    histogram = np.bincount(gray[valid].ravel(), minlength=256).astype(np.float64)
+    probability = histogram / histogram.sum()
+    mass = np.cumsum(probability)
+    mean = np.cumsum(probability * np.arange(256))
+    denominator = mass * (1 - mass)
+    variance = np.divide(
+        (mean[-1] * mass - mean) ** 2, denominator, out=np.zeros(256), where=denominator > 1e-12
+    )
+    threshold = int(np.argmax(variance))
+    components, count = label((gray > threshold) & valid, structure=np.ones((3, 3)))
+    if not count:
+        raise ValueError("Material candidate has no foreground component")
+    sizes = np.bincount(components.ravel())
+    sizes[0] = 0
+    body = binary_fill_holes(components == int(np.argmax(sizes))) & valid
+    interior = (distance_transform_edt(body) > 24) & valid
+    return interior, {
+        "type": "source_gray_median5_otsu_largest_fillholes_erode24",
+        "threshold": threshold,
+        "body_pixels": int(body.sum()),
+        "interior_pixels": int(interior.sum()),
+        "human_approved": False,
+    }
+
+
 def prepare(root, output, config):
     if (output / "manifest.json").exists():
         raise FileExistsError("Use a new trial directory")
@@ -67,7 +99,11 @@ def prepare(root, output, config):
         raise ValueError("Fixed parents or seeds changed")
     if (config["steps"], config["guidance"], config["revision"]) != (50, 30, REVISION):
         raise ValueError("Frozen FLUX recipe changed")
-    for key, expected in (("guard", 24), ("collar", 12), ("edit_radius", 96)):
+    recipes = {"A_baseline_v1": (24, 12, 96), "A_local_material_r1": (64, 12, 48)}
+    recipe_id = config.get("recipe_id", "A_baseline_v1")
+    if recipe_id not in recipes:
+        raise ValueError("Unregistered hypothesis-driven recipe")
+    for key, expected in zip(("guard", "collar", "edit_radius"), recipes[recipe_id], strict=True):
         if config[key] != expected:
             raise ValueError("Frozen region construction changed")
     manifest_path = within(root, config["manifest"])
@@ -131,6 +167,10 @@ def prepare(root, output, config):
         g = (distance_transform_edt(~m) <= config["guard"]) & valid
         distance = distance_transform_edt(~g)
         e = (distance > 0) & (distance <= config["edit_radius"]) & valid
+        material_roi, roi_record = (valid.copy(), {"type": "baseline_valid_canvas"})
+        if recipe_id == "A_local_material_r1":
+            material_roi, roi_record = material_interior(source, valid, sample.product)
+            e &= material_roi
         q = e & (distance <= config["collar"])
         if not m.any() or not e.any() or np.any(e & g) or np.any(m & ~g):
             raise ValueError("Invalid M/G/E geometry")
@@ -141,6 +181,10 @@ def prepare(root, output, config):
         weight[rim] *= 0.5 * (
             1 - np.cos(np.pi * (config["edit_radius"] - distance[rim]) / config["collar"])
         )
+        if recipe_id == "A_local_material_r1" and sample.product == "hazelnut":
+            roi_distance = distance_transform_edt(material_roi)
+            roi_feather = np.clip(roi_distance / config["collar"], 0, 1)
+            weight *= (0.5 * (1 - np.cos(np.pi * roi_feather))).astype(np.float32)
         folder = output / (sample.product + "_" + parent_id.rsplit("/", 1)[-1])
         folder.mkdir(parents=True, exist_ok=False)
         for name, array in (
@@ -152,6 +196,7 @@ def prepare(root, output, config):
             ("E.png", e.astype(np.uint8) * 255),
             ("Q.png", q.astype(np.uint8) * 255),
             ("valid.png", valid.astype(np.uint8) * 255),
+            ("material_ROI_candidate.png", material_roi.astype(np.uint8) * 255),
         ):
             save_png(folder / name, array)
         np.save(folder / "edit_weight.npy", weight, allow_pickle=False)
@@ -166,6 +211,7 @@ def prepare(root, output, config):
                 "directory": folder.name,
                 "mask_interpolation": "PIL nearest",
                 "protection_context_human_approved": False,
+                "material_interior_adapter": roi_record,
                 "pixels": {
                     "M": int(m.sum()),
                     "G": int(g.sum()),
