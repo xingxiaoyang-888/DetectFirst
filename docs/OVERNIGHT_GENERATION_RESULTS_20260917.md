@@ -49,3 +49,11 @@ B2721792完成1,317 GPU秒，8调用8技术成功，每图仍61原生步/610atte
 第二且最后一轮 `B_local_structural_hole_r2` 针对异常不可见：初始化引导0.3改0.55，carpet/hazelnut都改明确small irregular hole/chipped-rim概念；原4正常父图、2seed、局部R、200配置步、guidance12.5及完整所有注意力/提示/潜梯度不变。属于AnomalyAny参数及正常输入域适配，不称完全复现作者notebook配置。CPU2721879从固定PNDM配置独立验证native201、t_start90、实际111步、attention最低1110，并通过10项硬限额/截止/并发/暂停A与B后拒绝调用/子孙超时检查。支持图仅在source/R/overlay字节hash逐一相等时复用前实际AI预览；生成质量仍待查看，产物 `outputs/overnight_20260917/B_local_structural_hole_r2`。
 
 `export_anomalyany_batch_qc.py` 在服务器CPU导出source/native联系图、支持域局部放大、差分和attention∩R候选及hash收据。CPU导出不新增模型调用、不申请GPU，不将残差或R/attention视为真实M。A暂停、无组合、无正式放量；若B第二轮仍未通过，暂停B并整理晨报而不盲重抽。
+
+## B最后修订完成与提前收尾
+
+B2721881在gpu4041完成2,277 GPU秒，8调用8技术成功。每图111原生scheduler步、1110attention、prompt update1；原生early refinement在5图触发（latent/prompt2246），3图不触发（2240），不是关闭关键梯度。实际查看全8张source/generated全图、attention及attention∩R overlay、原生R局部对照：地毯4图仍无清晰孔洞；榛子2张variant1仅见浅色块或材质重建，2张variant2出现两处疑似小孔但物理孔洞/杂点存在歧义。后两张单列为疑似可见异常并带flags，不计整体准入。所有候选边界仍弥散、碎片化或覆盖支持域，整体AI准入0/8，人工0。逐图hash/原因在 `reports/overnight_20260917/B_r2_ai_check.json`。
+
+两线各两轮有具体假设修订均未达到路线质量门槛，B也暂停；未使用剩余预算盲重抽，未组合、正式放量或启动分割训练。本夜新增32次生成全部技术完成（A8、B24，含1次原FAILED检查器恢复），A第二轮另有8个CPU派生结果且新生成0。开发累计46/120次；夜间新增5,252/28,800 GPU秒（1.4589 L40卡时），窗口前943秒，项目合计6,195秒（1.7208卡时）。这是Slurm分配时长账单口径，不是货币费用。
+
+2026-09-16T20:43:26Z精确核对账本9个作业均terminal、squeue无活动条目、预留0/不确定提交0。完成立即释放的最后GPU2721881已COMPLETED。只在确认当前PID146866的uid/cwd/cmdline对应本项目watchdog后停止该守卫；保留初始/v2收据及最终释放收据。晨报为 `docs/MORNING_REPORT.md`，图像留在服务器，纯记录包及最终CPU核验另列其中。所有人工reviewer/review hash仍为null，原失败及严格分割审核FAIL保持。
