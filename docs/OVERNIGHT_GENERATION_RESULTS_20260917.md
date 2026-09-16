@@ -41,3 +41,11 @@ B2721762完成1,179 GPU秒，连同首张2721748的185秒，本轮B固定8调用
 第一轮 `B_local_edit_r1` 有具体假设：固定正常图内部的局部潜空间编辑支持域，减少全局彩色/物体纹理伪影；地毯改为明确短细cut概念，榛子仍为crack。所有4正常父图、2seed、200配置步、guidance12.5、初始化0.3及完整原方法梯度不变。地毯支持域固定画布中心半轴72×40，榛子使用最大正常前景质心半轴64×28，轻微不规则边缘，保留原基底mask。支持域是R，不能冒充真实M。新导出attention∩R的标注候选，原attention/原阈值候选同样保留并注明非像素真值。
 
 CPU2721789 prepare/preflight通过，实际看4个source/support/overlay对照：地毯各R9,069像素（3.46%画布）；榛子R5,641/5,646（2.15%），都是正常材质上的单连通内部区域。AI仅允许执行小批测试并记录潜空间边界风险，不代表生成语义或真值标签通过。新产物 `outputs/overnight_20260917/B_local_edit_r1`。A路线暂停的状态由预算入口/逐调用检查强制拒绝进一步A调用；B第一修订继续小批，不组合或扩量。
+
+## B第一修订结果与第二轮有限修订
+
+B2721792完成1,317 GPU秒，8调用8技术成功，每图仍61原生步/610attention/1246latent-prompt/early refinement1。实际看全部8张全图、attention∩R候选overlay及原生R局部对照：局部支持减少全局彩色伪影，但4地毯没有明确cut，4榛子没有明确crack，只见织纹重建/软化或小杂点。标注候选局部化也不能代替实际异常边界。AI整体准入0，人工0；`B_r1_ai_check.json`保留逐图hash。原生outsideR仍因潜空间/VAE重建变化，地毯平均RGB18.68–19.05、榛子2.35–2.54；不称其像素相等。至此开发38调用、夜间新增2,975 GPU秒、项目合计3,918秒，本批全部GPU已释放。
+
+第二且最后一轮 `B_local_structural_hole_r2` 针对异常不可见：初始化引导0.3改0.55，carpet/hazelnut都改明确small irregular hole/chipped-rim概念；原4正常父图、2seed、局部R、200配置步、guidance12.5及完整所有注意力/提示/潜梯度不变。属于AnomalyAny参数及正常输入域适配，不称完全复现作者notebook配置。CPU2721879从固定PNDM配置独立验证native201、t_start90、实际111步、attention最低1110，并通过10项硬限额/截止/并发/暂停A与B后拒绝调用/子孙超时检查。支持图仅在source/R/overlay字节hash逐一相等时复用前实际AI预览；生成质量仍待查看，产物 `outputs/overnight_20260917/B_local_structural_hole_r2`。
+
+`export_anomalyany_batch_qc.py` 在服务器CPU导出source/native联系图、支持域局部放大、差分和attention∩R候选及hash收据。CPU导出不新增模型调用、不申请GPU，不将残差或R/attention视为真实M。A暂停、无组合、无正式放量；若B第二轮仍未通过，暂停B并整理晨报而不盲重抽。

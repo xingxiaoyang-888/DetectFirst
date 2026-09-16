@@ -32,6 +32,7 @@ def now():
 
 def document(output, manifest):
     write_json(output / "manifest.json", manifest)
+    config = manifest["config"]
     lines = [
         "# B: AnomalyAny finite complete method trial",
         f"Status: {manifest['status']}; candidates WAITING_HUMAN.",
@@ -39,8 +40,8 @@ def document(output, manifest):
         "No abnormal image reference, official example image, anomaly finetuned model or held-out prompt tuning.",
         "Complete official notebook route: normal initialization, anomaly attention gradients and prompt refinement.",
         "Reported method: AnomalyAny + normal-input foreground adaptation; exact reproduction is not claimed.",
-        "Official SD1.5: 200 scheduler configuration steps, guidance12.5, initialization guidance0.3.",
-        "The schedule is truncated at t_start=140; actual iterations use the pinned scheduler native timestep count.",
+        f"SD1.5: 200 scheduler configuration steps, guidance12.5, initialization guidance{config['init_image_guidance_scale']}.",
+        "Actual iterations use the pinned scheduler native timestep count minus the configured initialization offset.",
         "scale_factor50, thresholds0:0.05/10:0.5/20:0.8, max_iter25; author inner10 gradient loop retained.",
         "SD FP32; original internal autocast and CLIP precision retained; no quantization or CPU offload.",
         "White/1 mask keeps generated latent, black/0 uses noised normal latent (official masked blending).",
@@ -75,6 +76,16 @@ def prepare(root, output, config):
         or config["guidance_scale"] != 12.5
     ):
         raise ValueError("Frozen notebook settings changed")
+    initializations = {
+        "B_baseline_v1": 0.3,
+        "B_local_edit_r1": 0.3,
+        "B_local_structural_hole_r2": 0.55,
+    }
+    if (
+        initializations.get(config.get("recipe_id", "B_baseline_v1"))
+        != config["init_image_guidance_scale"]
+    ):
+        raise ValueError("Unregistered finite initialization recipe")
     samples = [Sample(**row) for row in read_jsonl(manifest_path)]
     normals = {
         unit: sorted(
@@ -222,7 +233,7 @@ def preflight(root, output, config):
             }
         with Image.open(folder / "foreground_candidate.png") as img:
             foreground = np.asarray(img.convert("L")) > 0
-        if config.get("recipe_id") == "B_local_edit_r1":
+        if config.get("recipe_id") in {"B_local_edit_r1", "B_local_structural_hole_r2"}:
             save_png(folder / "foreground_base_candidate.png", foreground.astype(np.uint8) * 255)
             if parent["sample"]["product"] == "carpet":
                 center_x, center_y, radius_x, radius_y = 256.0, 256.0, 72.0, 40.0
@@ -242,7 +253,7 @@ def preflight(root, output, config):
             save_png(folder / "foreground_candidate.png", foreground.astype(np.uint8) * 255)
             construction += "; fixed normal-only local irregular support"
             parent["local_edit_support_adapter"] = {
-                "recipe_id": "B_local_edit_r1",
+                "recipe_id": config["recipe_id"],
                 "center_x": center_x,
                 "center_y": center_y,
                 "radius_x": radius_x,
@@ -362,7 +373,8 @@ def run(root, output, config):
             ).strip(),
             "entry_sha256": sha256(Path(__file__)),
             "scheduler_steps_configured": 200,
-            "t_start": 140,
+            "t_start": config["n_inference_steps"]
+            - int(config["n_inference_steps"] * config["init_image_guidance_scale"]),
         },
     )
     document(output, manifest)
