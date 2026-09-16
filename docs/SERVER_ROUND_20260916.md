@@ -206,3 +206,55 @@ FLUX 有限恢复共使用 3/3 次，MVTec 使用 1/3 次；各次失败收据�
 原严格 FP32/BF16 审计继续 FAIL；补充输入隔离仅为有限探针 PASS，验收定义保持 `atol=1e-5, rtol=0`，研究结果 NOT_EVALUATED。最终只读队列记录为空，累计仍为 420 GPU 秒、0.1166666667 L40 卡时，按 2 元/卡时估算 0.2333333333 元，不含取整及其他费用；CPU 费用未估算。等待和收尾未增加 GPU 作业。
 
 下载校验、既定 CPU 数据准备与记录整理已完成，结果交接主任务后停止这项 10 分钟监控；人工 ROI 审核及研究验收由主任务接续。本轮仅在 `codex/server-audit-evidence` 同步文档，不合并 main，不启动新实验。
+
+## 后续 S02 授权：首组生图与固定污渍对照
+
+主任务随后转达用户的首组真实生图授权，以及对规则椭圆污斑的质疑。下载监控已停止，本节是新的有限生图阶段。没有训练、正式扩量或人工审核通过。
+
+### 首组真实 FLUX 图片
+
+服务器目录 `/ssdfs/datahome/u15016/XXY_CVPR/DetectFirst/outputs/s02_first_group_20260916163237Z/`。保存 `source.png`、`candidate_roi.png`、`edit_mask.png`、`roi_overlay.png`、`defect.png`、`normal_edit_1.png`、`normal_edit_2.png`、`contact_sheet.png` 以及 manifest/summary/README。前三张生成输出均为可读的 512×512 RGB，联系表 1536×1080。
+
+底图为 MVTec AD carpet，parent `mvtec/carpet/0333c45d5f605d77c743`，原始 `carpet/train/good/074.png`，original_split=train、role=normal_train、label=0；原图 1024×1024，实际输入缩放为 512×512。它是正常图，尚未产生 defect.png 时已向主任务明确说明，未把 source 当缺陷输出。
+
+固定 FLUX revision 不变，50 步/guidance 30/BF16，实际 transformer、两个 text encoder 和 VAE 的参数 dtype 均为 BF16。单 pipeline、`enable_model_cpu_offload(gpu_id=0)`，离线 `local_files_only=True`，没有量化或网络下载。白色/255 的 mask 为允许编辑的 R；黑色/0 为保留条件。保存原生输出，不合成 mask 外像素。候选 ROI 仍未审，R 不是缺陷真值。
+
+CPU 预检 `2721472`：2CPU/16G/0GPU，15 秒，Ruff/语法/pip check/输入准备退出 0。GPU `2721474`：显式 `p_p15016`、`cpu-500_core-l40-8_card-a800-8_card`、L40 分区、`gpu:l40:1`，实际 NVIDIA L40，6CPU/96G/30 分钟上限，COMPLETED/0:0，实际 125 秒。入口运行提交 `4e37283cbf978fd27c060ed0195b9affcb8993df`，pipeline 加载 10.23861 秒。
+
+| 调用 | pipeline 秒 | peak allocated bytes | peak reserved bytes |
+| --- | ---: | ---: | ---: |
+| defect | 54.19345 | 24179614208 | 24352129024 |
+| normal_edit_1 | 26.31349 | 24179614208 | 24352129024 |
+| normal_edit_2 | 25.34665 | 24179614208 | 24352129024 |
+
+设备总显存 47576711168 bytes。首次调用有较大启动开销；稳态两次约 2.32 张/分钟，三次 pipeline 总计约 1.70 张/分钟，不含加载/脚本/保存成本。只记录这些有限样本，不构成 20 次测速结论，也不能由 allocated 峰值推断双实例安全并行。主任务与本任务的 AI 视觉初检均认为深色污斑边缘太规则、像椭圆贴片，正常编辑也有局部模糊/纹理变化；技术生成完成不代表缺陷真实性或正常语义合格，未写人工审核通过。
+
+### 有限 2×2 污渍真实性诊断
+
+用户优先要求诊断真实性，因此未提交吞吐试验 job。新的目录 `/ssdfs/datahome/u15016/XXY_CVPR/DetectFirst/outputs/s02_stain_diagnostic_20260916T164729Z/`，`comparison_grid.png` 为 1024×1080：上行旧 prompt、下行改进 prompt，左列原椭圆 R、右列不规则 R。左上 `old_prompt_ellipse_historical.png` 是原首图字节复制，没有重生成。三张新增 raw PNG 为 `old_prompt_irregular.png`、`new_prompt_ellipse.png`、`new_prompt_irregular.png`，全部可读的 512×512 RGB。
+
+三次全部同正常训练底图、同首图 defect seed `6542678547070446254`，保持 50/guidance30/512/BF16/原 model CPU offload 单 pipeline 串行；没有批处理或 prompt embedding 缓存改动。历史参考来自另一个 GPU 作业/节点，解释保持有限。没有查看真实测试缺陷选 prompt，没有后处理粘贴噪声或污渍。
+
+原 R 面积 13085，bbox xyxy（含端点）`[139,233,291,341]`；不规则 R 面积 13087（仅 +2 像素），bbox `[124,223,318,336]`，8 连通单组件，均在同候选 ROI 内。不规则 R 用原椭圆中心/长宽比的 128 顶点径向多谐波轮廓，经固定 24 步缩放二分匹配面积；公式、scale、mask SHA 保存于 manifest。它只是编辑许可区域，不是污渍真值。
+
+改进普通 prompt 描述非对称灰褐液体吸附、浓淡不均、羽化、透明渗染及可见纤维/编织结构，并要求避免黑色几何贴片。该版本不支持 negative_prompt，未传入。日志保留 CLIP 108-token 文本按 77 上限截断末尾的 warning；T5 默认上限 512。未在作业途中缩短或替换冻结 prompt。
+
+CPU `2721504`：2CPU/16G/0GPU，13 秒，Ruff/语法/输入与 mask 准备退出 0。GPU `2721505`：同显式账户/qos/实际 1×L40，6CPU/96G/30 分钟上限，COMPLETED/0:0，128 秒，运行提交 `7949af588bcb332f3ec372b1dcb5862df4bdd9d1`，加载 10.50629 秒，无 OOM。
+
+| 新增对照 | pipeline 秒 | peak allocated bytes | peak reserved bytes |
+| --- | ---: | ---: | ---: |
+| old_prompt_irregular | 55.27777 | 24179614208 | 24352129024 |
+| new_prompt_ellipse | 26.35551 | 24179614208 | 24352129024 |
+| new_prompt_irregular | 26.03874 | 24179614208 | 24352129024 |
+
+AI 初检目标仍未达到：新 prompt 配椭圆 R 仍形成偏平的规则灰色块，纤维未连续可见；不规则 R 减弱明显色块，却没有确认清晰可信的吸附污渍。此判断保存在独立 `ai_visual_check.json`，不是人工审核，也不是对 mask/prompt 的普遍因果证明。全部结果保留，未抽换 seed、无限调 prompt 或扩大旧 recipe。该版本原生 image/mask processor 与 generator 支持列表输入，源码证据保存于 `native_api_source.json`；本轮没有 batch2 性能实测。
+
+### 记账与记录交接
+
+本次共 6 次真实开发 diffusion 调用（首组 3＋新增对照 3）计入 120 次开发预算，全部尚未准入。两个 GPU 作业已结束释放，本项目累计 420＋125＋128＝673 GPU 秒，0.1869444444 L40 卡时，按 2 元/卡时估算 0.3738888889 元，不含取整/其他费用。两次 CPU 分配合计 28 秒、0 GPU，CPU 费未估算。其他 ACL 项目作业按 WorkDir 核实为独立任务，未操作或混入本项目预算。
+
+最终纯记录包 `F:/DetectFirst/reports/s02_stain_diagnostic_20260916T164729Z/s02_generation_checkpoint_20260916T164729Z_v2.tar.gz`，服务器同相对路径，52183 bytes，SHA256 `7751afd52ca640cf198098bbabccf91f4a8a5275970e13e0859b83374e8ddc1c`。65 个来源记录＋1 个 checksum 索引，共 66 个 tar 成员，本地路径/类型/包及逐文件 SHA 检查 PASS；没有图片、模型、原始数据或凭据。本地仍仅同步代码/记录，没有本地项目测试。
+
+首次记录包中仅 AI 侧 JSON 数字字段发生 64 位 seed 序列化舍入，v2 改用准确十进制字符串并包含 erratum，旧包保留；原 Python 运行 seed、原生生成 manifest 与图片均未改变或重生成。逐调用计时使用 perf_counter，费用 elapsed 用 Slurm，节点 UTC 时钟与登录节点可能有偏差，保留原始时间字段。
+
+两个独立技术入口未改变正式 ROI 人审门槛、模型源码、严格 `atol=1e-5, rtol=0` 验收或数据划分。原 FP32/BF16 审计 FAIL 保留，ROI reviewer/审核 SHA 仍 null，研究 NOT_EVALUATED。有限诊断已完成，本轮不再新增生图、吞吐试验、训练或正式扩量，交由主任务与用户查看原始图片决定后续。
