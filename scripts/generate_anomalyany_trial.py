@@ -37,12 +37,15 @@ def document(output, manifest):
         "Four normal_train parents, two fixed author-example seeds each, maximum eight calls.",
         "No abnormal image reference, official example image, anomaly finetuned model or held-out prompt tuning.",
         "Complete official notebook route: normal initialization, anomaly attention gradients and prompt refinement.",
+        "Reported method: AnomalyAny + normal-input foreground adaptation; exact reproduction is not claimed.",
         "Official SD1.5: 200 scheduler configuration steps, guidance12.5, initialization guidance0.3.",
         "The schedule is truncated at t_start=140, leaving60 actual denoising iterations.",
         "scale_factor50, thresholds0:0.05/10:0.5/20:0.8, max_iter25; author inner10 gradient loop retained.",
         "SD FP32; original internal autocast and CLIP precision retained; no quantization or CPU offload.",
         "White/1 mask keeps generated latent, black/0 uses noised normal latent (official masked blending).",
-        "Carpet uses full white mask; hazelnut uses author's fg_extraction median5/threshold127 mask.",
+        "Carpet uses full white mask; hazelnut uses normal-image gray median5+Otsu candidate mask.",
+        "Author threshold127 produced an empty selected hazelnut mask; original result is preserved.",
+        "Otsu preprocessing was fixed for both normal hazelnut parents before any GPU call; method gradients unchanged.",
         "Foreground masks are candidates, not human-approved defect truth or ROI approval.",
         "Official AnomalyAny files remain unchanged. Wrapper forces local verified model/CLIP paths.",
         "Old runwayml HF namespace resolves to unaffiliated SD1.5 mirror; pinned revision and LFS hashes recorded.",
@@ -134,6 +137,7 @@ def prepare(root, output, config):
 
 
 def preflight(root, output, config):
+    import cv2
     from transformers import CLIPTokenizer
 
     report = within(root, config["report"])
@@ -190,18 +194,65 @@ def preflight(root, output, config):
             save_png(folder / "foreground_candidate.png", np.full((512, 512), 255, dtype=np.uint8))
             construction = "all-white full texture candidate"
         else:
-            fg_extraction(str(folder / "source.png"), str(folder / "foreground_candidate.png"))
-            construction = "official utils.fg_extraction: gray median5 threshold127 binary"
+            author_path = folder / "foreground_author_threshold127.png"
+            if not author_path.exists():
+                fg_extraction(str(folder / "source.png"), str(author_path))
+            gray = cv2.imread(str(folder / "source.png"), cv2.IMREAD_GRAYSCALE)
+            smooth = cv2.medianBlur(gray, 5)
+            threshold, candidate = cv2.threshold(
+                smooth, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+            )
+            save_png(folder / "foreground_candidate.png", candidate)
+            construction = (
+                "normal-only gray median5 Otsu; same fixed rule for both hazelnut parents"
+            )
+            parent["foreground_preprocessing_adapter"] = {
+                "type": "normal_image_only_median5_otsu",
+                "threshold": float(threshold),
+                "gray_min": int(gray.min()),
+                "gray_max": int(gray.max()),
+                "author_threshold127_mask_sha256": sha256(author_path),
+                "author_threshold127_mask_pixels": int(
+                    (np.asarray(Image.open(author_path)) > 0).sum()
+                ),
+                "reason": "Author threshold127 gave 237 pixels for normal hazelnut000 and 0 for normal hazelnut001; the same input ROI rule was adapted for both before GPU calls.",
+                "original_method_gradients_changed": False,
+            }
         with Image.open(folder / "foreground_candidate.png") as img:
             foreground = np.asarray(img.convert("L")) > 0
         if not foreground.any():
             raise ValueError("Foreground candidate is empty")
+        component_count, labels, stats, _ = cv2.connectedComponentsWithStats(
+            foreground.astype(np.uint8), connectivity=8
+        )
+        component_areas = sorted((int(area) for area in stats[1:, cv2.CC_STAT_AREA]), reverse=True)
+        with Image.open(folder / "source.png") as image:
+            source = np.asarray(image.convert("RGB")).copy()
+        overlay = source.copy()
+        overlay[foreground] = (0.7 * source[foreground] + 0.3 * np.array([0, 255, 100])).astype(
+            np.uint8
+        )
+        contour = (
+            cv2.morphologyEx(
+                foreground.astype(np.uint8), cv2.MORPH_GRADIENT, np.ones((3, 3), np.uint8)
+            )
+            > 0
+        )
+        overlay[contour] = [255, 180, 0]
+        save_png(folder / "foreground_overlay.png", overlay)
+        if parent["sample"]["product"] == "hazelnut" and foreground.all():
+            raise ValueError("Hazelnut foreground covers the entire image")
         parent.update(
             token_indices=indices,
             decoded_tokens=decoded,
             token_counts=counts,
             foreground_sha256=sha256(folder / "foreground_candidate.png"),
             foreground_pixels=int(foreground.sum()),
+            foreground_fraction=float(foreground.mean()),
+            foreground_components_8=component_count - 1,
+            foreground_component_areas=component_areas,
+            foreground_largest_component_fraction=float(component_areas[0] / foreground.sum()),
+            foreground_overlay_sha256=sha256(folder / "foreground_overlay.png"),
             foreground_construction=construction,
             foreground_human_approved=False,
             mask_polarity="white edit latent; black preserve noised source latent",
