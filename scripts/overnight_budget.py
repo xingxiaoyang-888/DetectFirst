@@ -12,7 +12,7 @@ import subprocess
 import tempfile
 import time
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,6 +29,10 @@ def utc():
 
 def deadline(state):
     return datetime.fromisoformat(state["deadline_utc"].replace("Z", "+00:00"))
+
+
+def cutoff(state):
+    return deadline(state) - timedelta(seconds=state.get("cutoff_safety_seconds", 0))
 
 
 def atomic(path, value):
@@ -109,7 +113,7 @@ def refresh(state):
 def available(state, seconds, cards=1):
     if state.get("unresolved_submissions", 0):
         raise BudgetStop("RECONCILE_UNCERTAIN_SUBMISSION_BEFORE_ANOTHER_JOB")
-    if utc() >= deadline(state):
+    if utc() >= cutoff(state):
         raise BudgetStop("ABSOLUTE_DEADLINE_REACHED")
     if (
         state["night_GPU_seconds"] + state["active_reserved_GPU_seconds"] + seconds * cards
@@ -163,7 +167,7 @@ def submit(path, script, name, seconds, node=None):
         refresh(state)
         if any(event["name"] == name for event in state["submission_receipts"]):
             raise ValueError("Use a unique name per submission receipt; never blindly retry")
-        seconds = min(seconds, math.floor((deadline(state) - utc()).total_seconds()) - 3)
+        seconds = min(seconds, math.floor((cutoff(state) - utc()).total_seconds()) - 3)
         if seconds < 1:
             raise BudgetStop("NO_EXECUTION_TIME_BEFORE_DEADLINE")
         available(state, seconds)
@@ -241,7 +245,7 @@ def claim_call(lane, group, seed):
         return None
     with locked(path) as state:
         refresh(state)
-        if utc() >= deadline(state):
+        if utc() >= cutoff(state):
             raise BudgetStop("ABSOLUTE_DEADLINE_REACHED_BETWEEN_IMAGES")
         if state["night_GPU_seconds"] >= state["night_GPU_seconds_limit"]:
             raise BudgetStop("GPU_BUDGET_REACHED_BETWEEN_IMAGES")
@@ -283,7 +287,7 @@ def execute(path, command):
         if job_id not in state["jobs"]:
             raise ValueError("GPU process must belong to a recorded lease")
         job = state["jobs"][job_id]
-        left = math.floor((deadline(state) - utc()).total_seconds()) - 2
+        left = math.floor((cutoff(state) - utc()).total_seconds()) - 2
         budget_left = (state["night_GPU_seconds_limit"] - state["night_GPU_seconds"]) // job[
             "cards"
         ]
@@ -328,10 +332,10 @@ def execute(path, command):
 
 def watch(path):
     state = json.loads(Path(path).read_text())
-    left = (deadline(state) - utc()).total_seconds()
+    left = (cutoff(state) - utc()).total_seconds()
     while left > 0:
         time.sleep(min(60, left))
-        left = (deadline(state) - utc()).total_seconds()
+        left = (cutoff(state) - utc()).total_seconds()
     state = json.loads(Path(path).read_text())
     errors = []
     for event in state["submission_receipts"]:

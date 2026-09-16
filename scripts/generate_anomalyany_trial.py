@@ -40,7 +40,7 @@ def document(output, manifest):
         "Complete official notebook route: normal initialization, anomaly attention gradients and prompt refinement.",
         "Reported method: AnomalyAny + normal-input foreground adaptation; exact reproduction is not claimed.",
         "Official SD1.5: 200 scheduler configuration steps, guidance12.5, initialization guidance0.3.",
-        "The schedule is truncated at t_start=140, leaving60 actual denoising iterations.",
+        "The schedule is truncated at t_start=140; actual iterations use the pinned scheduler native timestep count.",
         "scale_factor50, thresholds0:0.05/10:0.5/20:0.8, max_iter25; author inner10 gradient loop retained.",
         "SD FP32; original internal autocast and CLIP precision retained; no quantization or CPU offload.",
         "White/1 mask keeps generated latent, black/0 uses noised normal latent (official masked blending).",
@@ -328,7 +328,6 @@ def run(root, output, config):
                 ["git", "rev-parse", "HEAD"], cwd=root, text=True
             ).strip(),
             "entry_sha256": sha256(Path(__file__)),
-            "actual_scheduler_steps_expected": 60,
             "scheduler_steps_configured": 200,
             "t_start": 140,
         },
@@ -360,6 +359,19 @@ def run(root, output, config):
             name: sorted({str(p.dtype) for p in getattr(stable, name).parameters()})
             for name in ("unet", "text_encoder", "vae")
         }
+        stable.scheduler.set_timesteps(config["n_inference_steps"], device="cuda")
+        native_steps = len(stable.scheduler.timesteps)
+        t_start = config["n_inference_steps"] - int(
+            config["n_inference_steps"] * config["init_image_guidance_scale"]
+        )
+        expected_steps = native_steps - t_start
+        manifest["runtime"].update(
+            native_scheduler_timesteps=native_steps,
+            actual_scheduler_steps_expected=expected_steps,
+            expected_attention_iterations_minimum=10 * expected_steps,
+            scheduler_class=type(stable.scheduler).__name__,
+        )
+        document(output, manifest)
         counters = {}
 
         def counted(name, function):
@@ -389,6 +401,10 @@ def run(root, output, config):
             with Image.open(folder / "source.png") as img:
                 source = img.convert("RGB").copy()
             for call in parent["calls"]:
+                if call["status"] == "SUCCESS" and call.get("recovered_after_wrapper_failure"):
+                    if sha256(folder / f"generated_{call['variant']}.png") != call["image_sha256"]:
+                        raise ValueError("Recovered generated image changed")
+                    continue
                 counters.clear()
                 load_events.clear()
                 call.update(status="RUNNING", started_at=now())
@@ -470,7 +486,7 @@ def run(root, output, config):
                 )
                 diff = np.abs(array.astype(np.int16) - np.asarray(source).astype(np.int16))
                 call.update(
-                    status="SUCCESS",
+                    status="GENERATED_PENDING_METHOD_CHECK",
                     ended_at=now(),
                     seconds=seconds,
                     peak_allocated_bytes=torch.cuda.max_memory_allocated(),
@@ -491,11 +507,12 @@ def run(root, output, config):
                     },
                 )
                 if (
-                    call["actual_scheduler_steps"] != 60
-                    or counters.get("_perform_att", 0) < 600
+                    call["actual_scheduler_steps"] != expected_steps
+                    or counters.get("_perform_att", 0) < 10 * expected_steps
                     or counters.get("_prompt_update", 0) != 1
                 ):
                     raise ValueError("Complete method execution counter mismatch")
+                call["status"] = "SUCCESS"
                 write_json(folder / f"call_{call['variant']}.json", call)
                 finish_call(
                     call["overnight_call_id"],
@@ -518,7 +535,7 @@ def run(root, output, config):
         }
         for parent in manifest["parents"]:
             for call in parent["calls"]:
-                if call["status"] == "RUNNING":
+                if call["status"] in {"RUNNING", "GENERATED_PENDING_METHOD_CHECK"}:
                     call.update(status="FAILED", ended_at=now(), error=manifest["error"])
                     finish_call(call.get("overnight_call_id"), "FAILED", manifest["error"])
         (output / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
