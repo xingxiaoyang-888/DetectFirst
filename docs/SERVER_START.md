@@ -2,6 +2,8 @@
 
 目标是先证明代码和对照构造正确，再使用真实数据评估 C1/C2。资源池可提供 8×L40S、8×A800；首先申请最多四张 L40S，按独立产品任务分配，避免环境安装和人工审核期间占卡。A800 显存和互联由实际预检确认。
 
+首批操作以 [S00/S01 修订执行安排](S00_S01_RUNBOOK.md) 为准：公共记录只执行一次，阶段日志分目录且拒绝覆盖；下载用 `download_batch.py` 保存逐批原始收据。下文为阶段总览，命令执行时使用该文档的 `record` 包装。
+
 ## 0. 拉取与安装
 
 ```bash
@@ -36,7 +38,7 @@ CUDA_VISIBLE_DEVICES=0 python scripts/check_env.py --config configs/bootstrap.ya
 ```
 
 ```bash
-python scripts/download_assets.py --config configs/assets.yaml --output-dir reports/S01_download
+python scripts/download_batch.py --config configs/assets.yaml --output-dir reports/<新批次>/S01_download --latest-dir reports/S01_download
 ```
 
 下载初始并发为 2，单个资产完成后即写 `<asset_id>.lock.json`，因此不必等所有下载结束才开始对应模型检查。`INCOMPLETE/WAITING_ACCESS` 不代表其他已完成资产不可用。不要让多个进程同时安装同一个虚拟环境。
@@ -44,6 +46,8 @@ python scripts/download_assets.py --config configs/assets.yaml --output-dir repo
 模型 checksum 来自下载收据；没有官方摘要时仅是本地一致性校验，不称官方真实性证明。FLUX 使用完整 Diffusers 布局和固定 revision。生成配置读取 `reports/S01_download/flux_fill.lock.json`。
 
 回传：Git commit、`env.json`、设备型号／显存、资产锁和 `download_status.json`、实际命令与退出码。无需回传整套模型。
+
+环境总状态包含每卡反传和执行异常，失败保留逐设备原因。下载历史验收以新批次的 `receipts/` 和 `command.json` 为准；latest 只是可变索引，不能代替历史证据。
 
 ## 2. S01 数据核验与角色冻结
 
@@ -98,6 +102,8 @@ CUDA_VISIBLE_DEVICES=1 python scripts/audit_model.py --config configs/train.yaml
 ```
 
 返回实际分辨率的输入形状、单图独立性误差、逐参数冻结与梯度表。这个步骤在服务器验证真实预训练权重，本地的随机权重架构检查不能替代它。
+
+审核实际遵循 `cfg.amp`。BF16 审核同时保留独立 FP32 对照，记录支持、实际输出精度、有限性、梯度以及各类独立性误差；归一化特征和分类头保持 FP32。原有绝对独立性阈值 1e-5 不自动放宽；低精度失败须诊断，FP32 PASS 不转移为 BF16 PASS。具体两种精度命令见修订执行安排 G 节。
 
 训练正式产品前，先复制配置到四个开发产品，保持一致的支持与审核池；任务来源不跨产品。P、B3、B10、B12 是最先完成的强对照。GPU 检查与其他数据下载可以并行。
 

@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import time
+import traceback
 import zipfile
 from pathlib import Path
 
@@ -31,39 +32,74 @@ def check_environment(output: Path, require_gpu: bool = True) -> dict:
             packages[package] = importlib.metadata.version(package)
         except importlib.metadata.PackageNotFoundError:
             packages[package] = None
-    gpu = []
-    if torch.cuda.is_available():
-        for index in range(torch.cuda.device_count()):
+    gpu, failures = [], []
+    cuda_available, device_count = None, 0
+    try:
+        cuda_available = torch.cuda.is_available()
+        if cuda_available:
+            device_count = torch.cuda.device_count()
+    except Exception as error:
+        failures.append(
+            {"scope": "cuda_discovery", "error": str(error), "traceback": traceback.format_exc()}
+        )
+    for index in range(device_count):
+        check = {"index": index, "status": "FAIL", "backward_passed": False}
+        gpu.append(check)  # Preserve the device record even if initialization fails.
+        try:
             properties = torch.cuda.get_device_properties(index)
+            check.update(name=properties.name, total_bytes=properties.total_memory)
             device = torch.device(f"cuda:{index}")
             x = torch.ones(8, device=device, requires_grad=True)
             x.square().sum().backward()
-            gpu.append(
-                {
-                    "index": index,
-                    "name": properties.name,
-                    "total_bytes": properties.total_memory,
-                    "backward_passed": bool(torch.equal(x.grad, torch.full_like(x, 2))),
-                }
-            )
+            torch.cuda.synchronize(device)
+            check["backward_passed"] = bool(torch.equal(x.grad, torch.full_like(x, 2)))
+            if check["backward_passed"]:
+                check["status"] = "PASS"
+            else:
+                check["error"] = "Gradient differs from the expected all-2 vector"
+        except Exception as error:
+            check.update(error=str(error), traceback=traceback.format_exc())
+        if check["status"] == "FAIL":
+            failures.append({"scope": f"cuda:{index}", "error": check["error"]})
     smi = None
+    smi_record = {"status": "NOT_AVAILABLE"}
     if shutil.which("nvidia-smi"):
-        smi = subprocess.run(
-            ["nvidia-smi", "--query-gpu=uuid,name,memory.total,memory.free", "--format=csv"],
-            capture_output=True,
-            text=True,
-            check=False,
-        ).stdout
+        argv = ["nvidia-smi", "--query-gpu=uuid,name,memory.total,memory.free", "--format=csv"]
+        try:
+            process = subprocess.run(argv, capture_output=True, text=True, check=False)
+            smi = process.stdout
+            smi_record = {
+                "status": "PASS" if process.returncode == 0 else "FAIL",
+                "argv": argv,
+                "exit_code": process.returncode,
+                "stdout": process.stdout,
+                "stderr": process.stderr,
+            }
+            if process.returncode != 0:
+                failures.append({"scope": "nvidia-smi", "error": process.stderr})
+        except Exception as error:
+            smi_record = {
+                "status": "FAIL",
+                "argv": argv,
+                "error": str(error),
+                "traceback": traceback.format_exc(),
+            }
+            failures.append({"scope": "nvidia-smi", "error": str(error)})
     output.mkdir(parents=True, exist_ok=True)
     result = {
-        "status": "PASS" if gpu or not require_gpu else "WAITING_RESOURCE",
+        "status": "FAIL" if failures else "PASS" if gpu or not require_gpu else "WAITING_RESOURCE",
         "cpu_check_only": not require_gpu,
+        "require_gpu": require_gpu,
+        "cuda_available": cuda_available,
+        "visible_device_count": device_count,
+        "failures": failures,
         "python": sys.version,
         "platform": platform.platform(),
         "packages": packages,
         "cuda_runtime": torch.version.cuda,
         "gpus": gpu,
         "nvidia_smi": smi,
+        "nvidia_smi_check": smi_record,
         "disk_free_bytes": shutil.disk_usage(output).free,
         "research_observation": "NOT_EVALUATED",
     }

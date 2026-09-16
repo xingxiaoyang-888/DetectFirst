@@ -9,7 +9,7 @@ import torch
 from defectfirst.config import TrainConfig
 from defectfirst.controls.artifacts import load_binary, load_rgb, verify_artifact
 from defectfirst.controls.review import verify_review
-from defectfirst.data.geometry import normalize_and_pad, occupancy
+from defectfirst.data.geometry import normalize_and_pad
 from defectfirst.evaluation.diagnostics import editing_diagnostic
 from defectfirst.evaluation.pipeline import (
     calibrate_run,
@@ -20,8 +20,7 @@ from defectfirst.evaluation.pipeline import (
 from defectfirst.evaluation.predict import predict_image
 from defectfirst.fixtures import create_fixture
 from defectfirst.io import read_json, read_jsonl, sha256, within, write_json, write_jsonl
-from defectfirst.losses.features import invariance, separation
-from defectfirst.models.segmentor import build_model
+from defectfirst.model_audit import audit_model as audit_model
 from defectfirst.quality import inference_benchmark
 from defectfirst.training.engine import train
 
@@ -48,78 +47,6 @@ def smoke(output: Path) -> dict:
     }
     write_json(output / "smoke_report.json", result)
     return result
-
-
-def audit_model(config: dict, root: Path, output: Path) -> dict:
-    cfg = TrainConfig.from_dict(config)
-    model = build_model(cfg.model, root, cfg.test_only).to(cfg.device).train()
-    generator = torch.Generator(device=cfg.device).manual_seed(17)
-    x = normalize_and_pad(torch.rand(4, 3, *cfg.canvas, generator=generator, device=cfg.device))
-    with torch.no_grad():
-        one = model(x[:1])
-        all_images = model(x)
-        reordered = model(x[[2, 0, 3, 1]])
-    errors = {
-        key: max(
-            float((one[key][0] - all_images[key][0]).abs().max()),
-            float((all_images[key][0] - reordered[key][1]).abs().max()),
-        )
-        for key in ("features", "logits")
-    }
-    if any(value > 1e-5 for value in errors.values()):
-        raise ValueError(f"Single-image independence failed: {errors}")
-    if not torch.equal(model.classifier(one["features"]), one["low_logits"]):
-        raise ValueError("Classification does not directly use the returned features")
-    mask = torch.zeros(cfg.canvas, device=cfg.device)
-    mask[cfg.canvas[0] // 4 : cfg.canvas[0] // 2, cfg.canvas[1] // 4 : cfg.canvas[1] // 2] = 1
-    weight = occupancy(mask)
-    audits = {}
-    for name, loss_function in (
-        ("inv", lambda h: invariance(h, weight)),
-        ("sep", lambda h: separation(h, weight, 1.8)),
-    ):
-        model.zero_grad(set_to_none=True)
-        result = model(x)
-        h = result["features"].reshape(2, 2, *result["features"].shape[1:])
-        loss_function(h).backward()
-        parameters = {
-            key: {
-                "trainable": p.requires_grad,
-                "grad_norm": float(p.grad.norm()) if p.grad is not None else None,
-            }
-            for key, p in model.named_parameters()
-        }
-        if any(not p["trainable"] and p["grad_norm"] is not None for p in parameters.values()):
-            raise ValueError("Frozen parameters received gradients")
-        if cfg.model.backbone == "dinov2_vitb14":
-            for block in range(6, 12):
-                subset = [
-                    value["grad_norm"]
-                    for key, value in parameters.items()
-                    if key.startswith(f"backbone.network.blocks.{block}.")
-                ]
-                if not subset or not any(value is not None and value > 0 for value in subset):
-                    raise ValueError(f"{name} gradient missing from block {block + 1}")
-        if not any(
-            value["grad_norm"] is not None and value["grad_norm"] > 0
-            for key, value in parameters.items()
-            if key.startswith("decoder.")
-        ):
-            raise ValueError(f"{name} gradient missing from decoder")
-        audits[name] = parameters
-    report = {
-        "status": "PASS",
-        "test_only": cfg.test_only,
-        "backbone": cfg.model.backbone,
-        "device": cfg.device,
-        "input_shape": list(x.shape),
-        "independence_max_errors": errors,
-        "gradient_audits": audits,
-        "single_image_forward_only": True,
-        "research_observation": "NOT_EVALUATED",
-    }
-    write_json(output / "model_audit.json", report)
-    return {key: value for key, value in report.items() if key != "gradient_audits"}
 
 
 def benchmark(config: dict, root: Path, output: Path) -> dict:
