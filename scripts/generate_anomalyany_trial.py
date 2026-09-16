@@ -47,6 +47,7 @@ def document(output, manifest):
         "Carpet uses full white mask; hazelnut uses normal-image gray median5+Otsu candidate mask.",
         "Author threshold127 produced an empty selected hazelnut mask; original result is preserved.",
         "Otsu preprocessing was fixed for both normal hazelnut parents before any GPU call; method gradients unchanged.",
+        "Local-edit revision1 further restricts white edit support to a fixed normal-only interior region; base mask is retained.",
         "Foreground masks are candidates, not human-approved defect truth or ROI approval.",
         "Official AnomalyAny files remain unchanged. Wrapper forces local verified model/CLIP paths.",
         "Old runwayml HF namespace resolves to unaffiliated SD1.5 mirror; pinned revision and LFS hashes recorded.",
@@ -221,6 +222,38 @@ def preflight(root, output, config):
             }
         with Image.open(folder / "foreground_candidate.png") as img:
             foreground = np.asarray(img.convert("L")) > 0
+        if config.get("recipe_id") == "B_local_edit_r1":
+            save_png(folder / "foreground_base_candidate.png", foreground.astype(np.uint8) * 255)
+            if parent["sample"]["product"] == "carpet":
+                center_x, center_y, radius_x, radius_y = 256.0, 256.0, 72.0, 40.0
+            else:
+                _, base_labels, base_stats, base_centers = cv2.connectedComponentsWithStats(
+                    foreground.astype(np.uint8), connectivity=8
+                )
+                largest = int(np.argmax(base_stats[1:, cv2.CC_STAT_AREA])) + 1
+                foreground &= base_labels == largest
+                center_x, center_y = (float(value) for value in base_centers[largest])
+                radius_x, radius_y = 64.0, 28.0
+            yy, xx = np.indices(foreground.shape, dtype=np.float32)
+            dx, dy = (xx - center_x) / radius_x, (yy - center_y) / radius_y
+            angle = np.arctan2(dy, dx)
+            edge = 1 + 0.06 * np.sin(3 * angle) + 0.04 * np.cos(5 * angle)
+            foreground &= dx * dx + dy * dy <= edge * edge
+            save_png(folder / "foreground_candidate.png", foreground.astype(np.uint8) * 255)
+            construction += "; fixed normal-only local irregular support"
+            parent["local_edit_support_adapter"] = {
+                "recipe_id": "B_local_edit_r1",
+                "center_x": center_x,
+                "center_y": center_y,
+                "radius_x": radius_x,
+                "radius_y": radius_y,
+                "normal_only_rule": "carpet canvas center; hazelnut largest source-only foreground centroid",
+                "base_candidate_sha256": sha256(folder / "foreground_base_candidate.png"),
+                "purpose": "restrict excessive global artifacts and make the synthetic defect/local annotation inspectable",
+                "is_actual_defect_mask": False,
+                "human_approved": False,
+                "official_method_gradients_changed": False,
+            }
         if not foreground.any():
             raise ValueError("Foreground candidate is empty")
         component_count, labels, stats, _ = cv2.connectedComponentsWithStats(
@@ -429,7 +462,12 @@ def run(root, output, config):
                 torch.cuda.synchronize()
                 start = time.perf_counter()
                 call["overnight_call_id"] = claim_call(
-                    "B", parent["sample"]["sample_id"], call["seed"]
+                    "B",
+                    {
+                        "run": str(output.relative_to(root)),
+                        "parent_id": parent["sample"]["sample_id"],
+                    },
+                    call["seed"],
                 )
                 document(output, manifest)
                 image, latent_image = run_on_prompt_and_masked_image(
@@ -438,7 +476,7 @@ def run(root, output, config):
                     controller=controller,
                     token_indices=parent["token_indices"],
                     init_image=source,
-                    init_image_guidance_scale=0.3,
+                    init_image_guidance_scale=config["init_image_guidance_scale"],
                     mask_image=str(folder / "foreground_candidate.png"),
                     seed=generator,
                     config=recipe_config,
@@ -484,6 +522,15 @@ def run(root, output, config):
                     folder / f"attention_candidate_{call['variant']}.png",
                     np.asarray(candidate.resize((512, 512), Image.Resampling.NEAREST)),
                 )
+                with Image.open(folder / "foreground_candidate.png") as mask_image:
+                    edit_support = np.asarray(mask_image.convert("L")) > 0
+                candidate_array = (
+                    np.asarray(candidate.resize((512, 512), Image.Resampling.NEAREST)) > 0
+                )
+                save_png(
+                    folder / f"annotation_candidate_in_R_{call['variant']}.png",
+                    (candidate_array & edit_support).astype(np.uint8) * 255,
+                )
                 diff = np.abs(array.astype(np.int16) - np.asarray(source).astype(np.int16))
                 call.update(
                     status="GENERATED_PENDING_METHOD_CHECK",
@@ -500,6 +547,12 @@ def run(root, output, config):
                     image_checks={
                         "size": [512, 512],
                         "mean_abs_rgb_change": float(diff.mean()),
+                        "inside_edit_support_mean_abs_rgb_change": float(diff[edit_support].mean()),
+                        "outside_edit_support_mean_abs_rgb_change": float(
+                            diff[~edit_support].mean()
+                        )
+                        if (~edit_support).any()
+                        else None,
                         "std": float(array.std()),
                         "anomaly_reference_count": 0,
                         "method_gradients_enabled": True,

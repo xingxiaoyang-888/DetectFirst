@@ -165,6 +165,8 @@ def submit(path, script, name, seconds, node=None):
         raise ValueError("Submission needs a positive limit and existing script")
     with locked(path) as state:
         refresh(state)
+        if name.startswith("dfnight-A") and state.get("A_lane_status", "").startswith("PAUSED"):
+            raise BudgetStop("A_LANE_PAUSED_AFTER_FINITE_REVISIONS")
         if any(event["name"] == name for event in state["submission_receipts"]):
             raise ValueError("Use a unique name per submission receipt; never blindly retry")
         seconds = min(seconds, math.floor((cutoff(state) - utc()).total_seconds()) - 3)
@@ -245,6 +247,8 @@ def claim_call(lane, group, seed):
         return None
     with locked(path) as state:
         refresh(state)
+        if lane == "A" and state.get("A_lane_status", "").startswith("PAUSED"):
+            raise BudgetStop("A_LANE_PAUSED_AFTER_FINITE_REVISIONS")
         if utc() >= cutoff(state):
             raise BudgetStop("ABSOLUTE_DEADLINE_REACHED_BETWEEN_IMAGES")
         if state["night_GPU_seconds"] >= state["night_GPU_seconds_limit"]:

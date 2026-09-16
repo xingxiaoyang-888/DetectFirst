@@ -33,3 +33,11 @@ A2721755完成270秒，8/8机械保持通过。实际查看全部8个最终/sour
 CPU2721784完成8个派生候选。实际看全部8个source/final全图及8组source/reused_raw/final局部：核心、正常材质、缺陷可见性和边界保持8/8；但视觉几乎仍是原图，E内平均RGB改变量0.40–2.66，程序非零差异不证明外围变化有效。因此整体AI_NOT_PASSED_EFFECTIVE_EXTERIOR_CONDITION，AI整体准入0，人工准入0。明细 `reports/overnight_20260917/A_r2_ai_check.json`，产物 `outputs/overnight_20260917/A_source_texture_illumination_r2`。
 
 A已用尽两轮具体假设修订，暂停该路线，继续独立B。两个seed派生的hash不同，但不按微小差异宣称有用条件多样性。不组合或正式扩量。
+
+## B原定8张完成与第一轮语义修订
+
+B2721762完成1,179 GPU秒，连同首张2721748的185秒，本轮B固定8调用全部技术完成。各图原生scheduler61步、attention610、prompt update1、latent/prompt update1246、early refinement1，所有关键梯度保留。初始8图的AI全量检查结果：地毯4图颜色/散点伪影或缺乏可信褪色，榛子normal000 variant1有一个可信裂纹候选；其他3榛子图目标裂纹不明显或接缝/杂点有歧义。8张attention平均阈值候选全都弥散、碎片化或覆盖整颗物体，标注对齐不合格，整体AI准入0，人工0。`B_fixed8_ai_check.json`记录逐图hash与原因。开发实际调用累计30，夜间新增GPU1,658秒，窗口前943秒合计2,601秒；初始批全部作业已释放。
+
+第一轮 `B_local_edit_r1` 有具体假设：固定正常图内部的局部潜空间编辑支持域，减少全局彩色/物体纹理伪影；地毯改为明确短细cut概念，榛子仍为crack。所有4正常父图、2seed、200配置步、guidance12.5、初始化0.3及完整原方法梯度不变。地毯支持域固定画布中心半轴72×40，榛子使用最大正常前景质心半轴64×28，轻微不规则边缘，保留原基底mask。支持域是R，不能冒充真实M。新导出attention∩R的标注候选，原attention/原阈值候选同样保留并注明非像素真值。
+
+CPU2721789 prepare/preflight通过，实际看4个source/support/overlay对照：地毯各R9,069像素（3.46%画布）；榛子R5,641/5,646（2.15%），都是正常材质上的单连通内部区域。AI仅允许执行小批测试并记录潜空间边界风险，不代表生成语义或真值标签通过。新产物 `outputs/overnight_20260917/B_local_edit_r1`。A路线暂停的状态由预算入口/逐调用检查强制拒绝进一步A调用；B第一修订继续小批，不组合或扩量。
