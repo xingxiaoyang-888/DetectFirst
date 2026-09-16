@@ -69,3 +69,15 @@ A新增252 L40秒，先前673秒，累计925秒=0.2569444444卡时；距累计4�
 自动检查 `defectfirst` 已绑定本任务，每10分钟检查并按授权继续；下载/排队/健康运行无变化保持安静，真实图片里程碑、完成、失败或需用户行动时报告。B有界执行和记录交付结束后删除检查。当前有外部资产等待，不声称本轮完整执行已结束。
 
 原 FP32/BF16 分割模型的严格1e-5审计仍 FAIL_UNCHANGED；本轮无训练、无正式扩量、无阈值放宽、无自动组合。两线质量分别通过并完成真实人审之后才能另设计组合轮。
+
+## B 准备完成及首次 CUDA 检查（后续更新）
+
+B 的14个 SD 文件共4,266,680,108 bytes、两个 OpenAI CLIP 共1,188,595,637 bytes均已下载校验，独立环境完成、pip check通过。首次CPU预检发现 sparse source缺少MANIFEST.in，CLIP wheel因此漏包原版词表；纳入同commit原MANIFEST重装解决，不改算法。随后只读Python导入产生的__pycache__被clean守卫误判；仅本clone git/info/exclude忽略编译缓存并在wrapper禁写bytecode，原方法代码未改，失败日志保留。
+
+作者fg_extraction threshold127在normal hazelnut000仅有237个亮像素，normal001为空。早期状态误写“000为空”，已在预检记录中更正；源图、父ID、提示和seed未换。任何GPU调用之前，两张正常榛子统一采用gray/median5/Otsu候选白编辑mask，方法名明确为**AnomalyAny＋正常输入前景适配**。原正常初始化、注意力梯度、提示梯度均保留，不能声称严格原样复现。
+
+CPU job2721686通过，两个normal_train source/mask/overlay已实际AI查看，白区覆盖榛子主体，背景保持黑，非空非全图。000的Otsu55、面积86,081（32.84%）、9个8连通块、最大块98.88%；001的Otsu55、面积73,673（28.10%）、16块、最大块99.00%。阴影暗面/边缘有缺口、小块残留，因此仅有限技术执行AI预检PASS_WITH_FLAGS，不冒充完整物体分割、人工ROI批准或生成缺陷质量通过。精确mask/overlay哈希保存在B_foreground_ai_precheck.json，提交守卫核对该版本。入口CPU最终检查2721687通过，源码提交913e61f。
+
+首次GPU job2721689分配gpu4020，在实际CUDA可用性/设备守卫处15秒退出；尚未加载pipeline、没有开始任何生成调用，8个call仍PLANNED。短设备probe2721692确认nvidia-smi实际NVIDIA L40/driver580.65.06，但独立环境CUDA初始化报No CUDA GPUs available，3卡秒后退出。仍保留实际L40严格守卫，不接受只凭Slurm Gres标签。
+
+当前项目累计925+15+3=943 GPU秒；development仍14/120，B实际generation attempts=0、输出图=0。probe2721694已在曾成功完成A的gpu4023排队，2分钟封顶，6CPU/96G/ntasks1，比较独立环境与原FLUX环境的CUDA可见性/绑定/名称；不加载模型、不SSH未分配节点、不改ACL。需读该probe实际证据后用新的有界retry launcher继续，不能绕过已有首提交防重标记。探针也计入4卡时预算。最新状态以同轮round_status.json和原始sacct/日志为准。
