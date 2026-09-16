@@ -10,6 +10,8 @@
 
 最新执行与判据见 [S00/S01 修订安排](S00_S01_RUNBOOK.md)，本地静态日志与提交交接保存在 `reports/fix_R1_R3_20260916/`。服务器应对修复提交运行完整 `verify_release.py`，并实际执行 DINO FP32/BF16 精度审核；Linux/Bash 日志回归不可作为跳过项处理。
 
+原对话对 c603735 的静态复核为 STATIC_REVIEWED_WITH_SERVER_FOLLOWUP；冻结策略的独立预期/实际验收仍有缺口，详见 [服务器待办](SERVER_PENDING.md)。依用户最新安排，本次复核后停止本地修复与全部测试，也不追加静态检查轮次；仅整理文档并推送修复分支，之后等待服务器。server_validation=NOT_RUN，研究观察仍为 NOT_EVALUATED。
+
 ## 已执行
 
 | 检查 | 实际结果与范围 |

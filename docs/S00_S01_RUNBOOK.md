@@ -2,6 +2,8 @@
 
 适用 Linux/Bash；服务器系统待确认。仅在接入信息、工作目录和资源分配确认后运行。以下变量须填写实际值，不直接照搬占位符。已有仓库先检查 remote/status/HEAD，不覆盖修改或重新克隆替代仓库。
 
+**当前暂停安排：**按用户最新要求，停止本地修复、扩展与所有测试（含追加静态检查），文档收尾及推送后等待服务器。server_validation=NOT_RUN。服务器首先处理 [剩余验收缺口](SERVER_PENDING.md)，特别是冻结策略的预期/实际对照；当前审核 PASS 不能单独证明冻结策略正确。
+
 ## A. 公共准备与命令记录
 
 新服务器没有仓库时，在确认的父目录执行 `git clone https://github.com/xingxiaoyang-888/DetectFirst.git`。进入真实仓库，核对 HEAD 为本轮修复交接报告中的 commit（main 基线为 631bce25a9922f933c80bd06d41cbce06ba48f27）；不一致先保存实际差异。不要对已有工作树强制 reset。
@@ -83,6 +85,8 @@ download_batch.py 自动将实际配置、SHA256、argv、UTC、退出码和原�
 
 默认配置的 MVTec/KSDD2 是 manual，因此预计整体 INCOMPLETE、退出码 2；不能将此当全阶段 PASS，也不阻止 DINO/VisA 等已 READY 资产继续使用。读取 `reports/$BATCH/S01_download/receipts/<id>.lock.json` 可逐项推进；download_status.json 的 complete 仅表示任务均返回。真正完整要求各资产 READY/有独立审核通过的人工导入凭据，并完成数据划分。
 
+下载进行中 latest 尚未发布：依赖就绪的模型检查和生成必须明确使用上述本批 receipts 中 status=READY 的收据；FLUX 配置中读取资产锁的路径也指向本批 flux_fill.lock.json。DINO 需本批源码/权重各自就绪，不能因上一批 latest 存在而忽略本批状态；其他数据与审核前置条件仍须满足。详情见服务器待办的“下载尚在进行时如何推进”。
+
 MVTec/KSDD2：在官方网站确认确切归档 URL 后登记到新版配置的 http 条目，path 指向 data/archives 中的归档；登记可得官方摘要/字节数。现成文件无下载收据时脚本会拒绝自动认可，先核实来源与摘要；不伪造收据。此处不预填可能失效的下载 URL。
 
 每项返回：固定来源/revision、文件清单、字节数、SHA256、官方摘要验证标记、下载记录和退出码；HF 返回完整组件文件清单，S02 再实际加载。无需回传整套模型。
@@ -131,6 +135,8 @@ record manifest_hash sha256sum data/manifests/manifest.jsonl data/manifests/supp
 ## G. 真实 DINO 精度审核（S05；资产就绪后）
 
 此项不需真实数据或 FLUX，但需要已核实的 DINO 源码和权重。在服务器用以下代码从下载收据创建两份配置；文件用 x 模式拒绝覆盖。示例使用开发 carpet，网络画布/结构保持既定配置；不是正式训练。
+
+验收前置：在服务器先补齐 SERVER_PENDING.md 中的冻结策略独立检查及错误解冻/错误冻结用例。当前代码仅按参数自身 requires_grad 判断冻结梯度，不能独立识别本应冻结却被错误解冻的层。本机不继续实现或测试此项。
 
 ```bash
 export STAGE=S05
