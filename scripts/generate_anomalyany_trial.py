@@ -249,7 +249,7 @@ def run(root, output, config):
     from clip_pipeline_attend_and_excite import RelationalAttendAndExcitePipeline
     from config import RunConfig
     from run import run_on_prompt_and_masked_image
-    from utils.ptp_utils import AttentionStore
+    from utils.ptp_utils import AttentionStore, aggregate_attention
 
     manifest = read_json(output / "manifest.json")
     report = within(root, config["report"])
@@ -378,11 +378,40 @@ def run(root, output, config):
                 )
                 torch.cuda.synchronize()
                 seconds = time.perf_counter() - start
+                if not bool(torch.isfinite(latent_image).all().item()):
+                    raise ValueError("Floating decoded image contains non-finite values")
                 array = np.asarray(image.convert("RGB"))
                 if array.shape != (512, 512, 3) or not np.isfinite(array).all():
                     raise ValueError("Invalid output image")
                 filename = f"generated_{call['variant']}.png"
                 save_png(folder / filename, array)
+                attention = (
+                    aggregate_attention(
+                        controller,
+                        res=16,
+                        from_where=("up", "mid", "down"),
+                        is_cross=True,
+                        select=0,
+                    )[:, :, parent["token_indices"][0]]
+                    .detach()
+                    .float()
+                    .cpu()
+                    .numpy()
+                )
+                np.save(folder / f"attention_{call['variant']}.npy", attention, allow_pickle=False)
+                scale = max(float(attention.max()), 1e-12)
+                attention_image = Image.fromarray(
+                    np.rint(255 * attention / scale).clip(0, 255).astype(np.uint8)
+                )
+                save_png(
+                    folder / f"attention_{call['variant']}.png",
+                    np.asarray(attention_image.resize((512, 512), Image.Resampling.BILINEAR)),
+                )
+                candidate = Image.fromarray((attention > attention.mean()).astype(np.uint8) * 255)
+                save_png(
+                    folder / f"attention_candidate_{call['variant']}.png",
+                    np.asarray(candidate.resize((512, 512), Image.Resampling.NEAREST)),
+                )
                 diff = np.abs(array.astype(np.int16) - np.asarray(source).astype(np.int16))
                 call.update(
                     status="SUCCESS",
@@ -394,6 +423,8 @@ def run(root, output, config):
                     method_counters=dict(counters),
                     clip_loads=list(load_events),
                     actual_scheduler_steps=counters.get("scheduler_step", 0),
+                    attention_candidate_is_defect_truth=False,
+                    floating_decoded_image_finite=True,
                     image_checks={
                         "size": [512, 512],
                         "mean_abs_rgb_change": float(diff.mean()),
