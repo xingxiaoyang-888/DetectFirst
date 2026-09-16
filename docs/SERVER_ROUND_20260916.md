@@ -122,3 +122,48 @@ C1/C2 范围、4 个开发产品、K_train=5/C_cal=5/K_ref=0、seed 11/22/33、2
 本地：`F:/DetectFirst/reports/server_20260916T100542Z/download_diagnostic_checkpoint.tar.gz`，展开目录同级 `download_diagnostic_checkpoint/`。SHA256 `7bc414c9e134ac66f39f34070410c8d78584c92994c194d485c15d6cf79318cb`，服务器与本地一致。
 
 包含诊断完整 JSON/summary、逐项原始命令和退出记录、Slurm 精确记账、认证复核、首次失败下载与两个新准备批次；没有模型/数据或凭据。核心报告是 `reports/input_isolation_20260916T115802Z/results/input_isolation.json`，交接汇总为同批次 `handoff_status.json`。本地仍未执行项目测试。
+
+## 连接恢复与四产品数据准备：13:52:40 UTC 更新快照
+
+主任务按用户后续基础连接修复授权恢复了标准反向隧道。此前自动审批拒绝及各次连接失败仍作为历史记录保留；本快照的代理连接已经恢复，不再以旧拒绝作为当前阻塞。
+
+### 下载路径与有限恢复
+
+首次恢复后，`flux_only_20260916T115833Z` 通过访问预检并开始下载。官方 `us.aws.cdn.hf.co` 的 8 MiB 实际载荷比较为：直连 HTTP 206，10.64884 秒、0.7512555 MiB/s；经代理 HTTP 206，18.98816 秒、0.4213151 MiB/s。该短测量不保证全程速度。只将此已验证官方 CDN 加入 NO_PROXY，HF API/认证继续走 17890。旧下载有意终止，wrapper 退出 241，确认原写入进程和所有锁释放后，使用新批次 `flux_direct_20260916T121206Z` 复用断点；原收据与切换记录保留。
+
+该批次随后因 ChunkedEncodingError/不完整响应退出 2；MVTec 旧恢复批次的 cable 同时记录不完整 HTTP 响应，hazelnut 记录 ConnectionRefused。只读检查确认 17890 再次无监听。主任务在北京时间 21:23:22 启动标准隐藏 SSH PID 51996，先确认无重复隧道，随后核实服务器端口监听和官方 FLUX API HTTP 200。凭据未重新登录或导出。
+
+新批次 `flux_resume_20260916T132054Z`、`mvtec_retry_20260916T132054Z` 在下载锁全部可用后启动。cable 对已有 455408409 字节断点的官方 Range/If-Range 探针返回匹配的 HTTP 206，总大小 504731120 字节，之后安全续传完成。FLUX 也观察到分片继续增长。
+
+用户要求每 10 分钟检查一次，旧 45 秒监控已单独停止，下载进程保持后台运行。恢复 helper 对临时连接/超时/不完整响应使用新独立尝试目录，每项最多 3 次恢复，两次启动至少相隔 600 秒；已有匹配进程就跳过。当前两项恢复计数各 1/3。服务器语法和幂等操作通过，未重复启动或增加计数。源码 SHA256 `f8ce76807c6c0aeef2c5b5152ee53ab5f727de470dc21f935e1521ab7e06bff5`，首版源码保留。代理由主任务管理，等待不分配 GPU。
+
+### 四产品开发数据已准备
+
+CPU 作业 `2715380`，账户 `p_p15016`，qos `cpu-500_core-l40-8_card-a800-8_card`，intel 分区，2 CPU/16G/10 分钟上限，0 GPU，实际 106 秒，Slurm COMPLETED/退出 0。实际运行代码提交为 `b11dd97955a6acabae72d1d7394a528fe4245a89`；语法和数据准备必要记录均退出 0。
+
+| 产品 | 归档 bytes | train | test | 解压处理 |
+| --- | ---: | ---: | ---: | --- |
+| carpet | 740285760 | 280 | 117 | 新独立目录 |
+| grid | 160763852 | 264 | 78 | 验证并复用旧目录 |
+| cable | 504731120 | 224 | 150 | 新独立目录 |
+| hazelnut | 617098680 | 391 | 110 | 新独立目录 |
+
+服务器计算节点重新核对实际归档 SHA 与 READY 收据一致。归档哈希均为本地一致性摘要，没有官方公布哈希验证。未删除、覆盖或重复解压 grid。
+
+- 开发清单 1614 条；manifest SHA256 `bc8cf47e0b5ed5b35bf526251255cd3836b34f842a76b53272653f3b36119324`。
+- support_ids SHA256 `66860401ed92c43aa66f1a2b891269e2d4c57706c266bcec8549390e7ec8644c`。元数据文件的实际字节已与准备收据重新比对。
+- 声明划分 audit 无冲突；1614 条 entity ID 全部 unknown，因此该 audit 不证明物理实体间的独立划分。
+- 40 个正常 parent 的待审 ROI，每产品 10 个，全部 WAITING_HUMAN；reviewer 和审核 sha256 全为 null。四张联系表和单个预览只保留在服务器，未传至本地，也没有代替人工审核。
+- 状态 `DEV_READY_WAITING_ROI_REVIEW`，范围仅四个既定开发产品。未修改完整数据协议、正式单元或 K_train/C_cal/K_ref、种子、生成/训练设置，未训练或生成。
+
+### FLUX 仍在下载
+
+13:52:40 UTC 快照：17/23 个文件已完成，9775640480 bytes；现有 incomplete 文件共 2369781760 bytes，写入并发仍按原下载器最多两项，保留的 incomplete 文件数不代表当前传输数。目标仍为固定 revision `358293da0354175698b67ec8299acf928313a78a` 的 23 个 Diffusers 文件，总 33915988848 bytes。下载收据和 `verified_files.json` 尚未 READY，不能确认模型下载完成；之后需核对精确文件集/大小及 8 个官方 LFS SHA。
+
+原严格 FP32/BF16 审核仍 FAIL；补充有限输入梯度证据 PASS 单独保留，研究结果仍 NOT_EVALUATED。L40 累计仍 420 GPU 秒、0.1166666667 卡时，按 2 元/卡时估算 0.2333333333 元；本次 CPU 分配不追加 L40 卡时，CPU 费用未估算。
+
+### 开发阶段纯记录证据包
+
+本地 `F:/DetectFirst/reports/server_20260916T100542Z/development_checkpoint_20260916T135230Z.tar.gz`，375324 bytes，SHA256 `5acb15c76e45907aedf6e205ad111ca82a85d64c501c27e5659cca4db2f25b0e`，服务器与本地一致。同级同名目录已按成员路径/类型检查后展开，53 个来源记录文件，78 个 tar 成员。包含归档收据、独立命令/退出记录、CPU 记账、清单/划分/support 元数据、待审 ROI JSONL 和下载恢复记录；没有模型、原始图像或凭据。本地仍仅用于同步、记录与版本管理，没有运行项目测试。
+
+核心汇总为包内 `handoff_status.json`，原服务器结果在 `reports/mvtec_retry_20260916T132054Z/D/`。数据准备不再重复提交；10 分钟监控继续等待 FLUX 下载校验。全部下载和记录交接完成后删除该监控，不启动新的 GPU 实验。
