@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
+from overnight_budget import claim_call, finish_call
 from PIL import Image, ImageDraw
 from scipy.ndimage import distance_transform_edt
 
@@ -286,6 +287,10 @@ def run(root, output, config):
             for call in parent["calls"]:
                 call.update(status="RUNNING", started_at=now())
                 document(output, manifest)
+                call["overnight_call_id"] = claim_call(
+                    "A", parent["sample"]["sample_id"], call["seed"]
+                )
+                document(output, manifest)
                 raw, timing = backend(source, e, call["prompt"], int(call["seed"]))
                 final = (
                     np.rint(
@@ -344,6 +349,11 @@ def run(root, output, config):
                     final_sha256=sha256(folder / f"final_{index}.png"),
                 )
                 write_json(folder / f"call_{index}.json", call)
+                finish_call(
+                    call["overnight_call_id"],
+                    "SUCCESS",
+                    {"final_sha256": call["final_sha256"], **timing},
+                )
                 document(output, manifest)
                 images_grid(output, manifest)
                 print(json.dumps({"parent_id": parent["sample"]["sample_id"], **call}), flush=True)
@@ -351,6 +361,11 @@ def run(root, output, config):
     except Exception as error:
         manifest["status"] = "FAILED"
         manifest["error"] = {"type": type(error).__name__, "message": str(error)}
+        for parent in manifest["parents"]:
+            for call in parent["calls"]:
+                if call["status"] == "RUNNING":
+                    call.update(status="FAILED", ended_at=now(), error=manifest["error"])
+                    finish_call(call.get("overnight_call_id"), "FAILED", manifest["error"])
         (output / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
     manifest["runtime"]["ended_at"] = now()
     document(output, manifest)

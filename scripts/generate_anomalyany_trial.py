@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
+from overnight_budget import claim_call, finish_call
 from PIL import Image, ImageDraw
 
 from defectfirst.controls.artifacts import save_png
@@ -411,6 +412,10 @@ def run(root, output, config):
                 torch.cuda.reset_peak_memory_stats()
                 torch.cuda.synchronize()
                 start = time.perf_counter()
+                call["overnight_call_id"] = claim_call(
+                    "B", parent["sample"]["sample_id"], call["seed"]
+                )
+                document(output, manifest)
                 image, latent_image = run_on_prompt_and_masked_image(
                     model=stable,
                     prompt=[recipe["prompt"]],
@@ -492,6 +497,11 @@ def run(root, output, config):
                 ):
                     raise ValueError("Complete method execution counter mismatch")
                 write_json(folder / f"call_{call['variant']}.json", call)
+                finish_call(
+                    call["overnight_call_id"],
+                    "SUCCESS",
+                    {"image_sha256": call["image_sha256"], "seconds": seconds},
+                )
                 document(output, manifest)
                 grid(output, manifest)
                 print(json.dumps({"parent_id": parent["sample"]["sample_id"], **call}), flush=True)
@@ -510,6 +520,7 @@ def run(root, output, config):
             for call in parent["calls"]:
                 if call["status"] == "RUNNING":
                     call.update(status="FAILED", ended_at=now(), error=manifest["error"])
+                    finish_call(call.get("overnight_call_id"), "FAILED", manifest["error"])
         (output / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
     finally:
         clip.load = original_clip_load
