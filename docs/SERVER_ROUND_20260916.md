@@ -2,6 +2,8 @@
 
 批次：`server_20260916T100542Z`。本记录区分工程检查与研究结果；当前无研究性能结论。
 
+下文先保留首轮交接快照；新增授权诊断、认证和下载进展见末节。当前原严格审核仍 FAIL。
+
 ## 结论
 
 - `server_validation_status=FAIL`：真实 DINO 的单张/批量数值差异仍超过既定绝对容差 `atol=1e-5, rtol=0`。
@@ -76,3 +78,47 @@ C1/C2 范围、4 个开发产品、K_train=5/C_cal=5/K_ref=0、seed 11/22/33、2
 - `C2/audit_precision.bundle`：以 4599abc 为前提，包含两次服务器修改；已验证并快进同步本地。
 
 尚需研究主任务决定数值检查后续方案，接续服务器 HF 认证与剩余数据连接问题。当前记录不授权新 GPU 实验。
+
+## 后续授权：单卡诊断与下载准备
+
+主任务随后转达用户授权：启动 FLUX 下载、恢复剩余三类开发数据，并执行一次最多 1 张 L40、10 分钟的前向输入梯度诊断。严格验收定义、网络和精度保持。
+
+### 单卡诊断已完成
+
+作业 `2713054`，批次 `input_isolation_20260916T115802Z`，gpu4002，1 张 L40，实际 16 秒，Slurm COMPLETED/退出 0。语法记录和诊断记录均退出 0，GPU 已释放，最终队列为空。
+
+实际代码提交仍为 `dc514def64bf7aedda74f003b4a8956c625c948f`，跟踪工作树干净；项目源码 fingerprint 为 `4c9f92784f3b11ab871cc1a98eff5c23e6948decc8e0f37a3042ccf638f7f7d0`。诊断脚本 SHA256 为 `606c517f672955f1703421bc32714ef4a67710f1ae2858068a9e90770d04c122`。脚本、配置、官方 DINO Python 文件哈希清单、关键源码副本、模块清单和实际算子 dtype/shape 均保存在本批报告。
+
+输入为相同 seed 17 的 4 张合成探针，归一化并填充后形状 `[4,3,532,532]`；模型使用原 train 前向、seed 11、关闭两种 TF32、确定性设置。没有逐图循环替换原批量前向、精度回退、配对损失、参数更新、训练或生成。FP32/BF16 的实际 Conv/Linear dtype 均符合请求。
+
+分别对 anchor 0 的 features 和 logits 做固定随机线性投影，再求其对完整输入 batch 的梯度：
+
+| 精度/输出 | 自身输入梯度 max abs | 其他三图梯度 max abs | 故意混合输入正对照的他图梯度 max abs |
+| --- | ---: | ---: | ---: |
+| FP32/features | 3.245813331886893e-6 | 0 | 1.2654434158321237e-6 |
+| FP32/logits | 2.4254908203147352e-4 | 0 | 7.432675920426846e-5 |
+| BF16/features | 3.56137752532959e-6 | 0 | 1.5497207641601562e-6 |
+| BF16/logits | 2.613067626953125e-4 | 0 | 9.298324584960938e-5 |
+
+自身梯度均有限且非零，其他图梯度严格零。同 shape 排列、替换同伴和重复运行误差仍全为 0。正对照仅在诊断夹具中令 `mixed[i] = input[i] + 0.25 * input[(i-1) mod B]`，原模型不变；检查正确检出 anchor 0 对 image 3 的依赖。
+
+`supplemental_evidence_status=PASS` 只指这些补充检查通过。单张/批量误差完整复现首轮 FP32/BF16 数值，原 `atol=1e-5, rtol=0` 审核继续 FAIL，`acceptance_definition_changed=false`，`research_observation=NOT_EVALUATED`。有限探针和两个标量投影不能证明所有输入下的完整 Jacobian 隔离，也不证明分割性能或 BF16 精度无影响。
+
+累计四个作业主行：420 GPU 秒，`0.1166666667` L40 卡时，按 2 元/卡时估算 `0.2333333333` 元，未计取整/其他费用。总预算仍为 4 卡时/8 元。
+
+### 认证通过，下载因连接阻塞
+
+主任务已完成官方 OAuth 设备登录并用原下载 CLI 独立确认，权限为 `openid profile gated-repos`，约 30 天有效、支持刷新。凭据由官方库写入默认缓存，文件权限 600，未同步或加入版本控制。隔离认证环境位于 `/ssdfs/datahome/u15016/XXY_CVPR/hpc/.venv-hf-auth`，训练和下载环境未改变。认证复核记录 `SUPERVISOR_AUTH_REVIEW.md` 已加入交接包，SHA256 `f809096dc5885c6de65d99a4e2e71f670362bcbf57a8e7f4d6c27b8a33a254f0`。
+
+首次 FLUX 启动批次 `flux_only_20260916T112949Z`，PID 2966960，在只读访问预检返回 ProxyError/退出 2；文件数和字节数均为 0。随后只读探测明确 `127.0.0.1:17890` ConnectionRefusedError，主任务也确认端口无监听。认证复核成功与后续连接断开分别记录，不重新认证。
+
+- FLUX 新批次 `flux_only_20260916T115833Z` 准备完成，尚未启动。固定 revision 与 23 个精确文件名，共 33915988848 bytes；排除根目录重复权重。配置 SHA256 `89e400230992a2883e315df3de44fae1adeaf5ddda2607c24c74abc892011d3a`。下载后核对 23 文件字节数，并将已有下载器从实际字节计算的 SHA256 与官方 LFS 哈希比较；无官方 LFS 哈希的小文件仅记录一致性摘要。
+- MVTec 新批次 `mvtec_resume_20260916T115610Z` 只含 carpet/cable/hazelnut，顺序单文件传输；分别保留 175112192/14680064/0 bytes 断点。FLUX 两文件与 MVTec 一文件合计最多三个大文件传输。
+- `D_resume.py` 已适配验证并复用原 grid 解压目录，不删除、覆盖或重复解压；尚未执行。解压及完整清单/ROI 准备仍需资产就绪和服务器计算分配。
+- 停止重复下载/认证，没有创建或恢复隧道，也没有绕过此前自动审批拒绝。等待主任务接续持久连接安排。
+
+### 新证据包
+
+本地：`F:/DetectFirst/reports/server_20260916T100542Z/download_diagnostic_checkpoint.tar.gz`，展开目录同级 `download_diagnostic_checkpoint/`。SHA256 `7bc414c9e134ac66f39f34070410c8d78584c92994c194d485c15d6cf79318cb`，服务器与本地一致。
+
+包含诊断完整 JSON/summary、逐项原始命令和退出记录、Slurm 精确记账、认证复核、首次失败下载与两个新准备批次；没有模型/数据或凭据。核心报告是 `reports/input_isolation_20260916T115802Z/results/input_isolation.json`，交接汇总为同批次 `handoff_status.json`。本地仍未执行项目测试。
