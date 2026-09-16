@@ -14,6 +14,56 @@ from defectfirst.losses.features import invariance, separation
 from defectfirst.models.segmentor import build_model
 
 
+def audit_freeze_policy(model, backbone: str) -> dict:
+    """Compare the research freeze contract to actual flags, independently of flags."""
+    rows, failures = {}, []
+    dino = backbone == "dinov2_vitb14"
+    for name, parameter in model.named_parameters():
+        expected = None
+        if not dino:
+            expected = True  # The tiny test network is fully trainable.
+        elif name.startswith(("projections.", "decoder.", "classifier.")):
+            expected = True
+        elif name.startswith("backbone.network.norm."):
+            expected = True
+        elif name.startswith("backbone.network.patch_embed.") or name in {
+            "backbone.network.cls_token",
+            "backbone.network.pos_embed",
+            "backbone.network.mask_token",
+        }:
+            expected = False
+        elif name.startswith("backbone.network.blocks."):
+            block = name.split(".")[3]
+            if block.isdigit() and 0 <= int(block) < 12:
+                expected = int(block) >= 6
+        actual = parameter.requires_grad
+        passed = expected is not None and actual == expected
+        rows[name] = {"expected_trainable": expected, "actual_trainable": actual, "passed": passed}
+        if not passed:
+            failures.append(f"{name}: expected {expected}, observed {actual}")
+    if dino:
+        required = [
+            "backbone.network.cls_token",
+            "backbone.network.pos_embed",
+            "backbone.network.mask_token",
+            "backbone.network.patch_embed.",
+            "backbone.network.norm.",
+            "projections.0.",
+            "projections.1.",
+            "projections.2.",
+            "decoder.",
+            "classifier.",
+        ] + [f"backbone.network.blocks.{block}." for block in range(12)]
+        for prefix in required:
+            if not any(
+                name.startswith(prefix) if prefix.endswith(".") else name == prefix for name in rows
+            ):
+                failures.append(f"Expected parameter group missing: {prefix}")
+    elif not rows:
+        failures.append("Model has no parameters")
+    return {"status": "FAIL" if failures else "PASS", "parameters": rows, "failures": failures}
+
+
 def _bf16_support(device: torch.device) -> dict:
     """Record API support and an actual autocast operator, without changing the model."""
     result = {"supported": False, "device_type": device.type}
@@ -131,6 +181,9 @@ def _audit_precision(model, cfg: TrainConfig, x: torch.Tensor, precision: str, r
                 failures.append(f"{name}/{key}: frozen parameter received a gradient")
         prefixes = ["decoder."]
         if cfg.model.backbone == "dinov2_vitb14":
+            prefixes.extend(
+                ["backbone.network.norm.", "projections.0.", "projections.1.", "projections.2."]
+            )
             prefixes.extend(f"backbone.network.blocks.{block}." for block in range(6, 12))
         for prefix in prefixes:
             if not any(
@@ -162,6 +215,9 @@ def audit_model(config: dict, root: Path, output: Path) -> dict:
     try:
         device = torch.device(cfg.device)
         model = build_model(cfg.model, root, cfg.test_only).to(device).train()
+        report["freeze_policy"] = audit_freeze_policy(model, cfg.model.backbone)
+        if report["freeze_policy"]["status"] != "PASS":
+            report["failures"].append("Independent expected/actual freeze policy failed")
         generator = torch.Generator(device=device).manual_seed(17)
         x = normalize_and_pad(torch.rand(4, 3, *cfg.canvas, generator=generator, device=device))
         report["input_shape"] = list(x.shape)
@@ -214,10 +270,12 @@ def audit_model(config: dict, root: Path, output: Path) -> dict:
         fp32_pass = report["precision_audits"]["float32"]["status"] == "PASS"
         report["diagnosis"] = (
             "LOW_PRECISION_FAILURE_REQUIRES_DIAGNOSIS"
-            if fp32_pass and report["failures"]
+            if requested == "bfloat16"
+            and fp32_pass
+            and report["precision_audits"]["bfloat16"]["status"] != "PASS"
             else "CHECKS_PASSED"
             if not report["failures"]
-            else "MODEL_OR_NUMERICS_FAILURE"
+            else "MODEL_POLICY_OR_NUMERICS_FAILURE"
         )
         report["diagnosis_scope"] = (
             "Batch-shape, partner, permutation and repeat differences are separate. "
