@@ -167,3 +167,42 @@ CPU 作业 `2715380`，账户 `p_p15016`，qos `cpu-500_core-l40-8_card-a800-8_c
 本地 `F:/DetectFirst/reports/server_20260916T100542Z/development_checkpoint_20260916T135230Z.tar.gz`，375324 bytes，SHA256 `5acb15c76e45907aedf6e205ad111ca82a85d64c501c27e5659cca4db2f25b0e`，服务器与本地一致。同级同名目录已按成员路径/类型检查后展开，53 个来源记录文件，78 个 tar 成员。包含归档收据、独立命令/退出记录、CPU 记账、清单/划分/support 元数据、待审 ROI JSONL 和下载恢复记录；没有模型、原始图像或凭据。本地仍仅用于同步、记录与版本管理，没有运行项目测试。
 
 核心汇总为包内 `handoff_status.json`，原服务器结果在 `reports/mvtec_retry_20260916T132054Z/D/`。数据准备不再重复提交；10 分钟监控继续等待 FLUX 下载校验。全部下载和记录交接完成后删除该监控，不启动新的 GPU 实验。
+
+## FLUX 下载校验完成：北京时间 2026-09-17 00:11:33
+
+本节追加最终结果，保留前面的失败记录和阶段快照。最终批次 `flux_resume_20260916T151523Z_r3` 于 2026-09-16 15:24:49 UTC 启动，16:11:33 UTC 结束，launcher 退出 0。16:22:04 UTC 的单次监控确认下载收据与 `verified_files.json` 均为 READY，下载进程已退出。
+
+### 固定资产验证
+
+- 仓库 `black-forest-labs/FLUX.1-Fill-dev`，revision `358293da0354175698b67ec8299acf928313a78a`。
+- 实际文件集、下载收据及原始 expected 文件集精确一致：23 个选定的 Diffusers 文件，总 33915988848 bytes，无 incomplete 文件；排除根目录重复权重。
+- 8 个官方 LFS SHA256 全部匹配现有下载器对实际下载字节计算的 SHA256。其他小文件仅核对收据一致性摘要，最终记录整理时重新核对了这些小文件的实际字节；不宣称它们通过官方哈希验证。
+- 收据 SHA256 `d4db348707865761e784ffcbc415ade6c1f74296236d3d17700b1d4d4cbbebd0`。
+- 原始 expected 清单 SHA256 `f8294d6602cb4232c8eb8dfd58b005401c1e118f10ea727fd21bbb1909b273a1`，与首次固定清单字节一致。
+- 原 `verify_flux_receipt.py` 已由批次启动脚本执行并退出 0，验证文件的 revision、总量、哈希及失败列表已复核；文件大小及修改时间仍符合收据。未重复读取全部大权重计算第二轮哈希。
+
+模型资产位于服务器 `models_cache/FLUX.1-Fill-dev`，最终原始收据和验证文件位于 `reports/flux_resume_20260916T151523Z_r3/`。READY 仅说明下载资产验证完成，没有模型加载、推理、生成、训练或研究性能结果。
+
+### 恢复记录与连接
+
+FLUX 有限恢复共使用 3/3 次，MVTec 使用 1/3 次；各次失败收据、命令和分片保留。第二次 FLUX 恢复完成 22 个文件后因 ChunkedEncodingError 退出。第三次准备期间代理端口 ConnectionRefused，未消耗启动次数；主任务在北京时间 23:22:27 恢复同一条标准隐藏 SSH 隧道（本地 PID 45144），核实服务器端口监听及官方 API HTTP 200 后，第三次恢复安全复用缓存并完成。
+
+主任务还转达了未来同一条标准本地连接的基础修复授权，记录在 `reports/server_20260916T100542Z/connection_authorization_20260916T152227Z.json`。本轮收尾未启动新隧道。旧 PID 51996 消失原因仍未知；更早 PID 48104 的 Connection reset 只证明至少一次 SSH 传输重置，不作为 HF 授权过期证据。认证未重复登录，API/认证仍经 17890，只有既定官方 CDN 载荷直连。
+
+### 最终纯记录证据包
+
+服务器及本地同相对路径 `reports/server_20260916T100542Z/final_download_checkpoint_20260916T162204Z.tar.gz`，本地绝对路径 `F:/DetectFirst/reports/server_20260916T100542Z/final_download_checkpoint_20260916T162204Z.tar.gz`，86931 bytes，SHA256 `d1d95c954b9d4270c76d64c684ca48dfa7e759364faa0b6f7d7ffa8b75ae7ec3`。
+
+包内 235 个来源记录文件、292 个 tar 成员，包含最终完整验证 JSON、固定清单、下载收据、认证访问结果、各次历史失败/恢复/切换记录、连接授权及冻结的 CPU/GPU 记账。开发阶段完整清单/ROI 元数据继续引用前一 `development_checkpoint_20260916T135230Z.tar.gz`，其原 SHA 与大小已复核。模型、原始数据、ROI 预览和凭据均未纳入。
+
+交付副本按 URL 查询参数、HF token 与 Bearer 值进行脱敏检查，本批选定记录的替换数量为 0；原服务器日志保持原字节。所有来源和交付副本的 SHA/大小记入包内 `handoff_status.json`。本地仅传输此小型记录包，检查成员路径/类型、包 SHA 与全部记录文件 SHA 后展开，验证 PASS，没有执行本地项目测试。
+
+最终包记录的服务器代码 HEAD 为 `927b0d733289272a10fcd39ac8b45ac392ee6098`，跟踪工作树干净。相对算法代码提交 `e6819cb07faf32eb3e65598ab7f1bfa7f46ab514` 仅有 docs 变更；CPU 数据准备的实际运行提交仍为 `b11dd97955a6acabae72d1d7394a528fe4245a89`。
+
+### 阶段边界与交接
+
+四产品数据仍为 `DEV_READY_WAITING_ROI_REVIEW`：1614 条清单及原 manifest/support SHA 未改变，40 条 ROI 全部 WAITING_HUMAN，reviewer 和审核 SHA 全为 null；entity ID 全部 unknown 的限制保留。未重复提交 CPU 准备、解压或制造人工审核结果。
+
+原严格 FP32/BF16 审计继续 FAIL；补充输入隔离仅为有限探针 PASS，验收定义保持 `atol=1e-5, rtol=0`，研究结果 NOT_EVALUATED。最终只读队列记录为空，累计仍为 420 GPU 秒、0.1166666667 L40 卡时，按 2 元/卡时估算 0.2333333333 元，不含取整及其他费用；CPU 费用未估算。等待和收尾未增加 GPU 作业。
+
+下载校验、既定 CPU 数据准备与记录整理已完成，结果交接主任务后停止这项 10 分钟监控；人工 ROI 审核及研究验收由主任务接续。本轮仅在 `codex/server-audit-evidence` 同步文档，不合并 main，不启动新实验。
