@@ -93,14 +93,17 @@ def test_success_requires_all_devices_and_smi_failures_are_saved(monkeypatch, tm
 
 
 class AuditNetwork(nn.Module):
-    def __init__(self, mix_batch=False, nonfinite=False):
+    def __init__(self, mix_batch=False, nonfinite=False, promote_raw=False):
         super().__init__()
         self.decoder = nn.Conv2d(3, 4, 1)
         self.classifier = CosineHead(4, 10, 1e-6)
         self.mix_batch, self.nonfinite = mix_batch, nonfinite
+        self.promote_raw = promote_raw
 
     def forward(self, x):
         raw = self.decoder(F.avg_pool2d(x, 4))
+        if self.promote_raw:
+            raw = raw.float()
         if self.mix_batch:
             raw = raw + raw.mean(0, keepdim=True)
         h = normalize_features(raw)
@@ -136,7 +139,9 @@ def test_bf16_executes_autocast_and_retains_fp32_features_head(monkeypatch, tmp_
     assert set(report["precision_audits"]) == {"float32", "bfloat16"}
     for precision, raw_dtype in (("float32", "torch.float32"), ("bfloat16", "torch.bfloat16")):
         audit = report["precision_audits"][precision]
-        assert audit["effective_precision"] == raw_dtype
+        assert audit["effective_precision"] == (
+            "bfloat16_autocast" if precision == "bfloat16" else "float32"
+        )
         for outputs in audit["outputs"].values():
             assert outputs["raw_features"]["dtype"] == raw_dtype
             assert outputs["features"]["dtype"] == "torch.float32"
@@ -205,3 +210,17 @@ def test_model_failures_preserve_diagnostic_evidence(monkeypatch, tmp_path, fail
     else:
         gradient = audit["gradient_audits"]["inv"]["parameters"]["decoder.weight"]
         assert gradient["grad_finite"] is False and gradient["grad_norm"] is None
+
+
+def test_autocast_allows_fp32_raw_after_a_promoting_operator(monkeypatch, tmp_path):
+    use_network(monkeypatch, promote_raw=True)
+    model_audit.audit_model(audit_config("bfloat16"), tmp_path, tmp_path)
+    report = read_json(tmp_path / "model_audit.json")
+    audit = report["precision_audits"]["bfloat16"]
+    assert audit["raw_feature_dtype"] == "torch.float32"
+    assert audit["operator_dtypes"]["batch"]["decoder"] == "torch.bfloat16"
+    assert audit["effective_precision"] == "bfloat16_autocast"
+    assert not any("execution did not match" in failure for failure in audit["failures"])
+    assert report["numeric_settings"]["deterministic_algorithms"] is True
+    assert report["numeric_settings"]["cudnn_allow_tf32"] is False
+    assert report["numeric_settings"]["cuda_matmul_allow_tf32"] is False

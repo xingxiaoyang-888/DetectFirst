@@ -12,6 +12,7 @@ from defectfirst.data.geometry import normalize_and_pad, occupancy
 from defectfirst.io import write_json
 from defectfirst.losses.features import invariance, separation
 from defectfirst.models.segmentor import build_model
+from defectfirst.training.checkpoint import seed_all
 
 
 def audit_freeze_policy(model, backbone: str) -> dict:
@@ -99,8 +100,31 @@ def _audit_precision(model, cfg: TrainConfig, x: torch.Tensor, precision: str, r
     failures = report["failures"]
 
     def forward(images, label):
-        with torch.autocast(device_type=x.device.type, dtype=torch.bfloat16, enabled=bf16):
-            result = model(images)
+        operator_dtypes = {}
+
+        def capture(name):
+            def hook(module, inputs, output):
+                operator_dtypes[name] = str(output.dtype)
+
+            return hook
+
+        handles = [
+            module.register_forward_hook(capture(name))
+            for name, module in model.named_modules()
+            if isinstance(module, (torch.nn.Conv2d, torch.nn.Linear))
+        ]
+        try:
+            with torch.autocast(device_type=x.device.type, dtype=torch.bfloat16, enabled=bf16):
+                result = model(images)
+        finally:
+            for handle in handles:
+                handle.remove()
+        report.setdefault("operator_dtypes", {})[label] = operator_dtypes
+        expected_operator = "torch.bfloat16" if bf16 else "torch.float32"
+        if not operator_dtypes or any(
+            dtype != expected_operator for dtype in operator_dtypes.values()
+        ):
+            failures.append(f"{label}: Conv/Linear execution did not match {precision}")
         report["outputs"][label] = {
             key: {"dtype": str(value.dtype), "finite": bool(torch.isfinite(value).all())}
             for key, value in result.items()
@@ -110,9 +134,6 @@ def _audit_precision(model, cfg: TrainConfig, x: torch.Tensor, precision: str, r
         for key in ("features", "low_logits", "logits"):
             if result[key].dtype != torch.float32:
                 failures.append(f"{label}: {key} must remain FP32")
-        expected_raw = torch.bfloat16 if bf16 else torch.float32
-        if result["raw_features"].dtype != expected_raw:
-            failures.append(f"{label}: raw_features did not use {precision}")
         return result
 
     with torch.no_grad():
@@ -123,7 +144,8 @@ def _audit_precision(model, cfg: TrainConfig, x: torch.Tensor, precision: str, r
         changed[1:] = -changed[1:]
         partners = forward(changed, "changed_partners_same_shape")
         repeat = forward(x, "repeated_batch")
-        report["effective_precision"] = str(batch["raw_features"].dtype)
+        report["effective_precision"] = "bfloat16_autocast" if bf16 else "float32"
+        report["raw_feature_dtype"] = str(batch["raw_features"].dtype)
         report["independence_errors"] = {
             key: {
                 "single_vs_batch": _difference(one[key][0], batch[key][0]),
@@ -214,6 +236,9 @@ def audit_model(config: dict, root: Path, output: Path) -> dict:
     }
     try:
         device = torch.device(cfg.device)
+        seed_all(cfg.seed)
+        report["initialization_seed"] = cfg.seed
+        report["numeric_policy"] = "Uses the same seed_all settings as training"
         model = build_model(cfg.model, root, cfg.test_only).to(device).train()
         report["freeze_policy"] = audit_freeze_policy(model, cfg.model.backbone)
         if report["freeze_policy"]["status"] != "PASS":
@@ -287,4 +312,8 @@ def audit_model(config: dict, root: Path, output: Path) -> dict:
         report["failures"].append(str(error))
         report["exception"] = {"type": type(error).__name__, "traceback": traceback.format_exc()}
     write_json(output / "model_audit.json", report)
-    return {key: value for key, value in report.items() if key != "precision_audits"}
+    return {
+        key: value
+        for key, value in report.items()
+        if key not in {"precision_audits", "freeze_policy"}
+    }
