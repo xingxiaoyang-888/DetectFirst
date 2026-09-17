@@ -74,7 +74,9 @@ def read_json(path: str | Path) -> Any:
 
 
 def read_config(path: str | Path) -> dict:
-    value = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    path = Path(path)
+    content = path.read_text(encoding="utf-8")
+    value = json.loads(content) if path.suffix.lower() == ".json" else yaml.safe_load(content)
     if not isinstance(value, dict):
         raise ValueError("Configuration must be a mapping")
     return value
