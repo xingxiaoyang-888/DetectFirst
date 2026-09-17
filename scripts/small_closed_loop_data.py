@@ -303,6 +303,103 @@ def repair():
         write_json(output / "repair_manifest.json", manifest)
 
 
+def donor_revision():
+    output = ROOT / OUTPUT
+    manifest = read_json(output / "repair_manifest.json")
+    assert manifest["status"] == "REPAIRED_WAITING_AI_SCREEN"
+    evidence_path = ROOT / REPORT / "initial_repair_AI_screen.json"
+    evidence = read_json(evidence_path)
+    offsets = {
+        "mvtec/carpet/466ee643aadfca789cab": (0, -192),
+        "mvtec/hazelnut/9ff8cc7816e85fee2912": (-64, 0),
+    }
+    for parent in manifest["parents"]:
+        identifier = parent["sample"]["sample_id"]
+        if identifier not in offsets:
+            continue
+        assert len(parent["calls"]) == 1 and parent["calls"][0]["status"] == "SUCCESS"
+        item = next(row for row in evidence["items"] if row["directory"] == parent["directory"])
+        assert item["normal_sha256"] == parent["calls"][0]["normal_sha256"] and item[
+            "AI_normal_core_gate"
+        ].startswith("NOT_PASSED")
+        folder = output / parent["directory"]
+        source = load_rgb(folder / "source.png")
+        m = load_binary(folder / "M.png")
+        g = load_binary(folder / "G.png")
+        support = load_binary(folder / "repair_support.png")
+        valid = load_binary(folder / "valid.png")
+        weight = np.load(folder / "repair_alpha.npy", allow_pickle=False)
+        dx, dy = offsets[identifier]
+        ys, xs = np.where(support)
+        sy, sx = ys + dy, xs + dx
+        assert sy.min() >= 0 and sx.min() >= 0 and sy.max() < 512 and sx.max() < 512
+        assert not m[sy, sx].any() and valid[sy, sx].all()
+        reference = source.copy()
+        reference[ys, xs] = source[sy, sx]
+        normal = (
+            np.rint(source * (1 - weight[..., None]) + reference * weight[..., None])
+            .clip(0, 255)
+            .astype(np.uint8)
+        )
+        normal[~support] = source[~support]
+        save_png(folder / "repair_reference_2.png", reference)
+        save_png(folder / "normal_repaired_2.png", normal)
+        donor_mask = np.zeros_like(m)
+        donor_mask[sy, sx] = True
+        save_png(folder / "normal_donor_support_2.png", donor_mask.astype(np.uint8) * 255)
+        diff = np.abs(normal.astype(np.int16) - source.astype(np.int16))
+        extra = g & ~m
+        checks = dict(
+            outside_repair_support_max_abs_rgb_error=int(diff[~support].max()),
+            outside_G_max_abs_rgb_error=int(diff[~g].max()),
+            M_mean_abs_rgb_change=float(diff[m].mean()),
+            M_outside_but_G_inside_mean_abs_rgb_change=float(diff[extra].mean()),
+            M_outside_but_G_inside_changed_pixels=int(np.any(diff > 0, axis=2)[extra].sum()),
+            normal_core_semantics="WAITING_ACTUAL_AI_INSPECTION",
+            remaining_confound="Same-source normal donor and repair footprint may be label-associated; not a resolved synthetic mechanism.",
+        )
+        assert (
+            checks["outside_repair_support_max_abs_rgb_error"] == 0
+            and checks["outside_G_max_abs_rgb_error"] == 0
+        )
+        call = dict(
+            attempt=2,
+            status="DERIVED_SUCCESS",
+            actual_new_generation_call=False,
+            normal_core_origin="same_source_GT_negative_region_donor_translation_fixed_offset",
+            source_donor_offset_xy=[dx, dy],
+            donor_source_sample_id=identifier,
+            donor_support="normal_donor_support_2.png",
+            donor_support_sha256=sha256(folder / "normal_donor_support_2.png"),
+            donor_GT_overlap_pixels=int(m[sy, sx].sum()),
+            normal_sha256=sha256(folder / "normal_repaired_2.png"),
+            reference_path=str((folder / "repair_reference_2.png").relative_to(ROOT)),
+            reference_sha256=sha256(folder / "repair_reference_2.png"),
+            first_failed_normal_sha256=parent["calls"][0]["normal_sha256"],
+            revision_reason="Initial model repair did not establish intact normal core. This is the one fixed source-normal-material donor revision explicitly allowed by the main task; no additional model sampling.",
+            initial_AI_evidence_sha256=sha256(evidence_path),
+            mechanical_checks=checks,
+            derived_at_utc=now(),
+            human_review_status="WAITING_HUMAN",
+            reviewers=[None, None],
+            review_sha256=[None, None],
+        )
+        parent["calls"].append(call)
+        write_json(folder / "repair_call_2.json", call)
+    write_json(output / "repair_manifest.json", manifest)
+    print(
+        __import__("json").dumps(
+            dict(
+                status="TWO_FIXED_DONOR_REVISIONS_DERIVED",
+                new_model_calls=0,
+                original_model_calls=4,
+                repair_support_unchanged=True,
+            )
+        ),
+        flush=True,
+    )
+
+
 def compose_groups():
     output = ROOT / OUTPUT
     manifest = read_json(output / "repair_manifest.json")
@@ -311,8 +408,8 @@ def compose_groups():
     groups = []
     for parent in manifest["parents"]:
         folder = output / parent["directory"]
-        call = parent["calls"][0]
-        assert call["status"] == "SUCCESS"
+        call = parent["calls"][-1]
+        assert call["status"] in {"SUCCESS", "DERIVED_SUCCESS"}
         normal = folder / f"normal_repaired_{call['attempt']}.png"
         assert sha256(normal) == call["normal_sha256"]
         primitive = dict(
@@ -334,7 +431,10 @@ def compose_groups():
                 support_sha256=manifest["support_sha256"],
                 source_M=str((folder / "M.png").relative_to(ROOT)),
                 source_G=str((folder / "G.png").relative_to(ROOT)),
-                normal_core_origin="FLUX_repair_of_selected_real_support_M_plus_buffer4_transition4",
+                normal_core_origin=call.get(
+                    "normal_core_origin",
+                    "FLUX_repair_of_selected_real_support_M_plus_buffer4_transition4",
+                ),
                 repair_call=str((folder / f"repair_call_{call['attempt']}.json").relative_to(ROOT)),
                 repair_call_sha256=sha256(folder / f"repair_call_{call['attempt']}.json"),
                 source_original_image_sha256=parent["source_original_image_sha256"],
@@ -372,7 +472,12 @@ def compose_groups():
                 status="FOUR_SIX_VIEW_CANDIDATES",
                 independent_cores=len(groups),
                 views=sum(len(state) for g in groups for state in g["views"]),
-                new_calls=len([c for p in manifest["parents"] for c in p["calls"]]),
+                new_model_calls=sum(
+                    c.get("actual_new_generation_call", True)
+                    for p in manifest["parents"]
+                    for c in p["calls"]
+                ),
+                repair_attempt_records=len([c for p in manifest["parents"] for c in p["calls"]]),
                 mechanical_invariants=[g["invariants"] for g in groups],
             )
         ),
@@ -382,11 +487,16 @@ def compose_groups():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=["prepare", "repair", "compose"])
+    parser.add_argument("mode", choices=["prepare", "repair", "compose", "donor-revision"])
     args = parser.parse_args()
     for name in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_DATASETS_OFFLINE"):
         os.environ[name] = "1"
-    {"prepare": prepare, "repair": repair, "compose": compose_groups}[args.mode]()
+    {
+        "prepare": prepare,
+        "repair": repair,
+        "compose": compose_groups,
+        "donor-revision": donor_revision,
+    }[args.mode]()
 
 
 if __name__ == "__main__":

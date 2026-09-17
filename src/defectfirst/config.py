@@ -103,6 +103,23 @@ class TrainConfig:
     def validate(self) -> None:
         if not isinstance(self.variant, str) or not self.variant.strip():
             raise ValueError("Experiment variant must be a nonempty explicit label")
+        if self.variant == "real_support_closed_loop_fp32" and (
+            self.test_only
+            or self.model.backbone != "dinov2_vitb14"
+            or self.amp != "none"
+            or self.method not in {"P", "B3"}
+            or self.k != 5
+            or self.seed != 11
+            or self.canvas != (512, 512)
+            or self.steps != 4000
+            or self.warmup != 200
+            or self.loss.margin != 1.0
+            or self.pairing_mode != "pixel"
+            or self.refit_checkpoint
+        ):
+            raise ValueError(
+                "Real-support pilot requires actual DINO, FP32, P/B3, seed11 K5 and frozen main steps/warmup/margin"
+            )
         if self.pairing_mode not in {"pixel", "pooled_matched", "pooled_shuffled"}:
             raise ValueError("Unknown pairing_mode")
         if self.pairing_mode != "pixel" and (

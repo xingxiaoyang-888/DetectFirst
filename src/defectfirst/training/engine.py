@@ -105,6 +105,24 @@ def _train(config: TrainConfig, output: Path, resume: bool, stop_after: int | No
         raise RuntimeError("Assigned CUDA device does not support BF16")
     seed_all(config.seed)
     model = build_model(config.model, data.root, config.test_only).to(device)
+    if data.is_pilot:
+        from defectfirst.training.pilot import model_digest
+
+        initial = {
+            "variant": config.variant,
+            "model_sha256": model_digest(model),
+            "seed": config.seed,
+            "precision": "FP32",
+            "source_contract": contract,
+        }
+        if (
+            resume
+            and read_json(output / "initial_model_state.json")["model_sha256"]
+            != initial["model_sha256"]
+        ):
+            raise ValueError("Pilot resumed constructor initialization differs")
+        if not resume:
+            write_json(output / "initial_model_state.json", initial)
     if config.refit_checkpoint:
         parent_path = within(data.root, config.refit_checkpoint)
         if sha256(parent_path) != config.refit_checkpoint_sha256:
@@ -139,6 +157,29 @@ def _train(config: TrainConfig, output: Path, resume: bool, stop_after: int | No
         optimizer.load_state_dict(state["optimizer"])
         scheduler.load_state_dict(state["scheduler"])
         restore_rng(state["rng"])
+        if data.is_pilot:
+            from defectfirst.training.pilot import state_digest
+
+            checks = {
+                "model_restored": state_digest(model.state_dict()) == state_digest(state["model"]),
+                "optimizer_restored": state_digest(optimizer.state_dict())
+                == state_digest(state["optimizer"]),
+                "scheduler_restored": scheduler.state_dict() == state["scheduler"],
+                "RNG_restored": state_digest(rng_state()) == state_digest(state["rng"]),
+            }
+            if not all(checks.values()):
+                raise ValueError("Pilot resume state restoration failed")
+            write_json(
+                output / "pilot_resume_receipt.json",
+                {
+                    "next_step": state["next_step"],
+                    "checkpoint_sha256": sha256(output / "last.pt"),
+                    "checks": checks,
+                    "scheduler_last_epoch": scheduler.last_epoch,
+                    "optimizer_learning_rates": [g["lr"] for g in optimizer.param_groups],
+                    "claim": "State restoration checked; no continuous-run bitwise equivalence claim.",
+                },
+            )
         start, best_ap, best_step, exposure = (
             state["next_step"],
             state["best_ap"],
@@ -174,7 +215,9 @@ def _train(config: TrainConfig, output: Path, resume: bool, stop_after: int | No
             "method_id": config.method,
             "variant": config.variant,
             "k_train": config.k,
-            "protocol_variant": "test_fixture" if config.test_only else "fewshot_supervised_v1",
+            "protocol_variant": config.variant
+            if data.is_pilot
+            else ("test_fixture" if config.test_only else "fewshot_supervised_v1"),
             "source_commit": commit,
             "backbone": config.model.backbone,
             "model_assets": config.as_dict()["model"],
@@ -186,8 +229,10 @@ def _train(config: TrainConfig, output: Path, resume: bool, stop_after: int | No
                 set(data.support_ids)
                 | {s.sample_id for s in data.samples if s.role == "anomaly_cal"}
             ),
-            "generator_reference_ids": [],
-            "mask_training_ids": [],
+            "generator_reference_ids": data.generator_reference_ids,
+            "mask_training_ids": data.mask_training_ids,
+            "derived_normal_cores": data.derived_normal_cores,
+            "human_review_status": "WAITING_HUMAN" if data.is_pilot else "STANDARD_PROTOCOL",
             "synthetic_pool_sha256": data.contract["groups_sha256"],
             "paired_metadata_access": config.method in {"P", "B4", "B5", "B7", "B10", "B11", "B12"},
             "input_resolution": list(config.canvas),
@@ -200,6 +245,12 @@ def _train(config: TrainConfig, output: Path, resume: bool, stop_after: int | No
     end = config.steps if stop_after is None else min(config.steps, stop_after)
     if end < start:
         raise ValueError("stop_after precedes resumed step")
+    if data.is_pilot:
+        if end > 200:
+            raise ValueError("Small pilot is authorized only through step200")
+        from defectfirst.training.pilot import prediction_snapshot
+
+        prediction_snapshot(model, data, schedule["steps"][0], device, output, start)
     for index in range(start, end):
         if device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(device)
@@ -218,6 +269,8 @@ def _train(config: TrainConfig, output: Path, resume: bool, stop_after: int | No
             device_type=device.type, dtype=torch.bfloat16, enabled=config.amp == "bfloat16"
         ):
             outputs = model(batch["images"])
+        if data.is_pilot and not all(torch.isfinite(value).all() for value in outputs.values()):
+            raise FloatingPointError(f"Nonfinite pilot model output at step {index}")
         # Pair objectives and output-space objectives run in FP32 outside autocast.
         terms = objective(outputs, batch, generator)
         if not all(torch.isfinite(value).all() for value in terms.values()):
@@ -232,6 +285,8 @@ def _train(config: TrainConfig, output: Path, resume: bool, stop_after: int | No
         if device.type == "cuda":
             torch.cuda.synchronize(device)
         values = {key: float(value.detach()) for key, value in terms.items()}
+        if data.is_pilot and config.method == "B3":
+            values.update(inv=0.0, sep=0.0)
         raw_norm = torch.linalg.vector_norm(outputs["raw_features"].detach().float(), dim=1)
         row = {
             "step": index,
@@ -251,6 +306,11 @@ def _train(config: TrainConfig, output: Path, resume: bool, stop_after: int | No
             else None,
             "calibration_ap": None,
         }
+        if data.is_pilot:
+            row["training_feature_objectives_enabled"] = config.method == "P"
+            row["B3_feature_loss_zero_meaning"] = (
+                "disabled_not_measured_zero" if config.method == "B3" else None
+            )
         if (index + 1) % config.checkpoint_interval == 0 or index + 1 == config.steps:
             score = calibration_ap(model, data, config, device)
             row["calibration_ap"] = score
@@ -289,9 +349,12 @@ def _train(config: TrainConfig, output: Path, resume: bool, stop_after: int | No
                     "exposure": exposure,
                 },
             )
+        if data.is_pilot and index + 1 in {100, 200}:
+            prediction_snapshot(model, data, schedule["steps"][0], device, output, index + 1)
     result = {
         "status": "COMPLETE" if end == config.steps else "INTERRUPTED_AT_REQUESTED_STEP",
         "test_only": config.test_only,
+        "variant": config.variant,
         "research_observation": "NOT_EVALUATED",
         "completed_steps": end,
         "best_calibration_ap": best_ap if best_step else None,

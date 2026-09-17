@@ -20,6 +20,9 @@ from defectfirst.io import digest, read_json, read_jsonl, sha256, stable_seed, w
 class TrainingData:
     def __init__(self, config: TrainConfig):
         self.config, self.root = config, Path(config.root).resolve()
+        from defectfirst.training.pilot import VARIANT, verify_admission
+
+        self.is_pilot = config.variant == VARIANT
         if not config.test_only:
             from defectfirst.protocol import DEVELOPMENT, FORMAL
 
@@ -69,12 +72,17 @@ class TrainingData:
                     continue
                 if group["group_id"] in self.groups:
                     raise ValueError("Duplicate group ID")
-                verify_review(group)
+                if self.is_pilot:
+                    verify_admission(self.root, group, config, self.support_ids)
+                else:
+                    verify_review(group)
                 if group.get("primitive", {}).get("test_only") and not config.test_only:
                     raise PermissionError(
                         "Automated fixture approvals cannot authorize research data"
                     )
-                if group["role"] != "normal_train" or group["parent_id"] not in self.normal_ids:
+                if not self.is_pilot and (
+                    group["role"] != "normal_train" or group["parent_id"] not in self.normal_ids
+                ):
                     raise PermissionError("Training group has a non-training parent")
                 self.groups[group["group_id"]] = group
         if config.method != "B0" and not self.groups:
@@ -102,6 +110,26 @@ class TrainingData:
                     "No eligible same-source/condition/area stratum for pairing experiment"
                 )
         self._verified_groups = set()
+        self.generator_reference_ids = (
+            sorted({g["parent_id"] for g in self.groups.values()}) if self.is_pilot else []
+        )
+        self.mask_training_ids = self.generator_reference_ids.copy() if self.is_pilot else []
+        self.derived_normal_cores = (
+            [
+                {
+                    "group_id": g["group_id"],
+                    "source_support_id": g["parent_id"],
+                    "image": g["primitive"]["normal"],
+                    "sha256": g["file_hashes"][g["primitive"]["normal"]],
+                    "origin": g["primitive"]["pilot"]["normal_core_origin"],
+                    "remaining_confound": g["primitive"]["pilot"]["remaining_confound"],
+                    "human_review_status": "WAITING_HUMAN",
+                }
+                for g in self.groups.values()
+            ]
+            if self.is_pilot
+            else []
+        )
         self.contract = {
             "manifest_sha256": sha256(manifest_path),
             "support_sha256": sha256(support_path),
@@ -114,6 +142,16 @@ class TrainingData:
             "canvas": list(config.canvas),
             "pairing_partner_map": self.partners,
         }
+        if self.is_pilot:
+            self.contract.update(
+                pilot_variant=config.variant,
+                pilot_AI_evidence_sha256=sorted(
+                    {g["review_policy"]["evidence_sha256"] for g in self.groups.values()}
+                ),
+                generator_reference_ids=self.generator_reference_ids,
+                mask_training_ids=self.mask_training_ids,
+                derived_normal_cores=self.derived_normal_cores,
+            )
 
     def batch(self, record: dict) -> dict:
         first = self._batch_one(record)
@@ -141,12 +179,19 @@ class TrainingData:
             group = self.groups[record["group_id"]]
             if group["group_id"] not in self._verified_groups:
                 verify_artifact(self.root, group)
-                parent_rgb, _ = self.train_store.load(group["parent_id"])
-                expected_normal = letterbox(parent_rgb, config.canvas)[0]
-                if not np.array_equal(
-                    expected_normal, load_rgb(within(self.root, group["primitive"]["normal"]))
-                ):
-                    raise ValueError("Primitive normal does not match its declared frozen parent")
+                if self.is_pilot:
+                    from defectfirst.training.pilot import verify_source
+
+                    verify_source(self.root, group, config, self.train_store)
+                else:
+                    parent_rgb, _ = self.train_store.load(group["parent_id"])
+                    expected_normal = letterbox(parent_rgb, config.canvas)[0]
+                    if not np.array_equal(
+                        expected_normal, load_rgb(within(self.root, group["primitive"]["normal"]))
+                    ):
+                        raise ValueError(
+                            "Primitive normal does not match its declared frozen parent"
+                        )
                 self._verified_groups.add(group["group_id"])
             conditions = group["accepted_conditions"]
             if config.loss.rho is not None:
